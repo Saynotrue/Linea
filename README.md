@@ -260,4 +260,4 @@ npm run build      # 배포 파일 만들기 → dist/
   - `renderer/`: 위젯 화면
   - `tampermonkey.js`: 유튜브 뮤직 페이지에서 재생 정보·오디오 분석 데이터를 보내는 사용자 스크립트
   - `vendor/syncanto/`: 추가 가사 제공처 (Apple Music, NetEase, QQ Music, KuGou 등)
-- 크롬 확장 프로그램(Linea Connector)과 Linea Player는 이 저장소 옆의 별도 폴더(`youtube-music-widget-extension`, `youtube-music-widget-standalone`)에서 만듭니다. 둘 다 이 저장소의 `tampermonkey.js`를 그대로 가져다 씁니다.
+- 크롬 확장 프로그램(Linea Connector)과 Linea Player는 이 저장소 옆의 별도 폴더(`linea-connector`, `linea-player`)에서 만듭니다. 둘 다 이 저장소의 `tampermonkey.js`를 그대로 가져다 씁니다.

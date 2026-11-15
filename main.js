@@ -140,10 +140,12 @@ app.whenReady().then(() => {
 
     // 창 보이기/숨기기: 전체화면 창이 다른 창 뒤에 있으면(Alt+Tab으로 넘어간 경우) 숨기지 않고 앞으로 가져옴
     function isWindowShown() {
-        if (!win.isVisible() || win.isMinimized()) return false;
+        // 종료 도중 창만 먼저 닫힌 경우(destroyed)에도 트레이 메뉴가 오류 없이 열리도록
+        if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return false;
         return !isWindowFullScreen() || win.isFocused();
     }
     function bringWindowToFront() {
+        if (!win || win.isDestroyed()) return;
         if (win.isMinimized()) win.restore();
         win.show();
         win.focus();
