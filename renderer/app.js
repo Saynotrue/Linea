@@ -423,7 +423,14 @@ function parseLRC(lrc) {
     result.sort((a, b) => a.time - b.time); // 같은 시간 줄은 파일에 적힌 순서 유지 (안정 정렬)
     const merged = mergeSameTimeLines(result);
     splitEmbeddedTranslation(merged);
+    if (!merged.embeddedTranslation && isKoreanLyrics(merged.map(l => l.text))) merged.koreanLyrics = true;
     return merged;
+}
+
+// 글자가 있는 줄 중 30% 이상에 한글이 있으면 한국어 가사 → 구글·AI 번역을 모두 요청하지 않음 (server.js와 같은 기준)
+function isKoreanLyrics(texts) {
+    const withLetters = texts.filter(t => /\p{L}/u.test(t));
+    return withLetters.length > 0 && withLetters.filter(t => HANGUL_CHAR.test(t)).length / withLetters.length >= 0.3;
 }
 
 // lrclib에 올라온 가사 중 같은 시간에 "원문 줄 + 번역 줄"을 겹쳐 적은 경우가 있음
@@ -880,6 +887,11 @@ async function requestTranslation() {
     if (!appConfig.showTranslation || currentLyrics.length === 0) return;
     const lyrics = currentLyrics;
     if (lyrics.translationDone || translationRequestFor === lyrics) return;
+    if (lyrics.koreanLyrics) { // 번역 서버에 보내지 않고 끝냄 (AI 번역 대기열도 다음 곡 차례로)
+        lyrics.translationDone = true;
+        showToast('한국어 가사라 번역하지 않아요', 1800);
+        return;
+    }
     translationRequestFor = lyrics;
     btnTranslate?.classList.add('loading');
     try {
@@ -920,7 +932,7 @@ function updateTranslateBadge() {
 }
 
 async function refineTranslation(lyrics) {
-    if (!appConfig.aiTranslation) return;
+    if (!appConfig.aiTranslation || lyrics.koreanLyrics || lyrics.embeddedTranslation) return;
     try {
         const res = await fetchAiTranslation(lyrics.map(l => l.text), lastTitle, lastArtist);
         if (currentLyrics !== lyrics || !res.translations || !appConfig.aiTranslation) return; // 그사이 AI 번역을 끈 경우도 버림
@@ -966,7 +978,7 @@ async function prefetchNextTrack(next) {
         const res = await fetch(`http://127.0.0.1:8888/lyrics?${params}`).then(r => r.json());
         if (!res?.lyrics || !appConfig.showTranslation) return;
         const parsed = parseLRC(res.lyrics);
-        if (parsed.embeddedTranslation) return; // 가사에 번역이 들어 있는 곡
+        if (parsed.embeddedTranslation || parsed.koreanLyrics) return; // 가사에 번역이 들어 있거나 한국어 가사인 곡
         const lines = parsed.map(l => l.text);
         if (!lines.length) return;
         await fetchTranslation(lines, next.title, next.artist, true);

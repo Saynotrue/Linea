@@ -490,7 +490,21 @@ app.get('/lyrics', async (req, res) => {
 
         if (expectLang) return syncedResults.find(r => detectTextLang(r.syncedLyrics) === expectLang) || null;
 
-        const originalLangMatch = syncedResults.find(r => /[가-힣ぁ-んァ-ン一-龥]/.test(r.syncedLyrics));
+        // 다른 언어로 다시 부른 버전(예: Fantastic Baby의 "ALIVE [Japanese Version]")은 듣는 곡도 그 버전일 때만 사용
+        //   후보는 곡 길이가 가까운 순이라, 길이가 1초 더 가까운 일본어 버전이 한국어 원곡보다 먼저 뽑히던 문제
+        const LANG_VERSION = /(japanese|english|chinese|korean)\s*(ver(sion)?\b|ver\.)|日本語\s*(ver|バージョン)|일본어\s*버전|영어\s*버전/i;
+        const versionOk = (r) => !LANG_VERSION.test(`${r.trackName} ${r.albumName}`) || LANG_VERSION.test(title);
+        const cjkResults = syncedResults.filter(r => /[가-힣ぁ-んァ-ン一-龥]/.test(r.syncedLyrics) && versionOk(r));
+        // 듣는 곡이 다른 언어 버전이면(예: "Fantastic Baby (Japanese Ver.)") 그 버전 가사를 먼저
+        if (LANG_VERSION.test(title)) {
+            const sameVersion = cjkResults.find(r => LANG_VERSION.test(`${r.trackName} ${r.albumName}`));
+            if (sameVersion) return sameVersion;
+        }
+        // 후보 가사의 언어가 섞여 있으면 가장 많은 후보가 쓰는 언어(대개 원곡 언어)를 고름. 같으면 길이가 가까운 쪽
+        const langCount = {};
+        cjkResults.forEach(r => { const l = detectTextLang(r.syncedLyrics); langCount[l] = (langCount[l] || 0) + 1; });
+        const mainLang = Object.keys(langCount).sort((a, b) => langCount[b] - langCount[a])[0];
+        const originalLangMatch = cjkResults.find(r => detectTextLang(r.syncedLyrics) === mainLang);
         const cleanMatch = syncedResults.find(r =>
             !/romaji|romanized|transliteration/i.test(r.trackName) &&
             !/romaji|romanized|transliteration/i.test(r.albumName)
@@ -764,14 +778,12 @@ const GOOGLE_TRANSLATE_URL = 'https://clients5.google.com/translate_a/t?client=d
 const TRANSLATE_CHUNK_LINES = 100; // 한 번에 보내는 줄 수 (요청이 너무 커지지 않게)
 const translationCache = new Map(); // 가사 전체 → 결과 (다음 곡 미리 번역 / 다시 켜기)
 
-const HANGUL = /[가-힣]/g;
-const LETTER = /\p{L}/gu;
 const HAS_LETTER = /\p{L}/u;
-// 글자 중 절반 이상이 한글이면 한국어 가사로 보고 번역하지 않음
+// 글자가 있는 줄 중 30% 이상에 한글이 있으면 한국어 가사로 보고 번역하지 않음 (renderer/app.js의 isKoreanLyrics와 같은 기준)
+//   글자 수로 세면 영어가 많이 섞인 K-pop(예: Fantastic Baby)은 한글 비율이 낮게 나와 번역 대상이 되던 문제
 const isKoreanLyrics = (lines) => {
-    const text = lines.join('');
-    const letters = (text.match(LETTER) || []).length;
-    return letters > 0 && (text.match(HANGUL) || []).length / letters >= 0.5;
+    const withLetters = lines.filter(l => HAS_LETTER.test(l));
+    return withLetters.length > 0 && withLetters.filter(l => /[가-힣]/.test(l)).length / withLetters.length >= 0.3;
 };
 
 async function googleTranslateLines(lines) {
