@@ -463,11 +463,35 @@ const plainLyric = (label) => (label || '').split(LYRIC_TR_SEP)[0];
 function setLyricText(el, label) {
     el.dataset.key = label || '';
     const [text, tr] = (label || '').split(LYRIC_TR_SEP);
-    if (!tr) { el.textContent = text; return; }
-    const trEl = document.createElement('span');
-    trEl.className = 'lyric-tr';
-    trEl.textContent = tr;
-    el.replaceChildren(document.createTextNode(text), trEl);
+    if (!tr) el.textContent = text;
+    else {
+        const trEl = document.createElement('span');
+        trEl.className = 'lyric-tr';
+        trEl.textContent = tr;
+        el.replaceChildren(document.createTextNode(text), trEl);
+    }
+    fitLyricLine(el);
+}
+
+// 전체화면 가사가 가사 창 폭보다 "조금만" 넘치면 글자를 살짝 줄여 한 줄로 (예: 일본어 줄 끝 글자 "う" 하나만 다음 줄로 넘어가는 경우)
+// 많이 넘치는 줄은 줄이지 않고 두 줄로 나눔 (글자가 지나치게 작아지지 않게)
+//   자리(이전/현재/다음 줄)마다 기본 글자 크기가 다르므로 매번 기본 크기로 되돌린 뒤 다시 잼
+const LYRIC_SLOT_IDS = ['prev2-lyric', 'prev-lyric', 'current-lyric', 'next-lyric', 'next2-lyric'];
+const LYRIC_SHRINK_MIN = 0.82; // 이 비율보다 더 줄여야 한 줄에 들어가면 두 줄로 나눔
+function fitLyricLine(el) {
+    el.style.removeProperty('font-size');
+    el.style.removeProperty('white-space');
+    if (!document.body.classList.contains('fullscreen-mode') || !LYRIC_SLOT_IDS.includes(el.id) || !el.clientWidth) return;
+    el.style.setProperty('white-space', 'nowrap', 'important'); // 한 줄일 때의 폭을 잼
+    const ratio = el.clientWidth / el.scrollWidth;
+    if (ratio >= 1 || ratio < LYRIC_SHRINK_MIN) { el.style.removeProperty('white-space'); return; }
+    const base = parseFloat(getComputedStyle(el).fontSize);
+    // 굵은 글씨 끝이 살짝 잘리지 않게 2% 여유
+    el.style.setProperty('font-size', `${Math.floor(base * ratio * 0.98 * 10) / 10}px`, 'important');
+}
+
+function refitLyricLines() {
+    LYRIC_SLOT_IDS.forEach(id => { const el = document.getElementById(id); if (el) fitLyricLine(el); });
 }
 
 // 전체화면 곡 제목은 아무리 길어도 한 줄: 곡 정보 폭을 넘으면 그만큼 글자 크기를 줄임
@@ -643,9 +667,9 @@ function animateLyricScroll(els, texts) {
 // 창 크기가 바뀌면 줄 위치가 달라지므로 흐림 경계 다시 계산
 window.addEventListener('resize', () => {
     fitTitle(); // 곡 정보 폭이 바뀌면 제목 한 줄 맞춤도 다시 (전체화면이 아니면 원래 크기로)
+    refitLyricLines(); // 가사 창 폭이 바뀌면 가사 한 줄 맞춤도 다시
     if (!document.body.classList.contains('fullscreen-mode')) return;
-    const ids = ['prev2-lyric', 'prev-lyric', 'current-lyric', 'next-lyric', 'next2-lyric'];
-    const els = ids.map(id => document.getElementById(id));
+    const els = LYRIC_SLOT_IDS.map(id => document.getElementById(id));
     if (els.every(Boolean)) updateLyricEdgeMask(document.getElementById('lyrics-container'), els);
 });
 
@@ -1078,6 +1102,7 @@ function toggleFullscreen() {
     if (!isFullscreen) setVolumePopover(false);
     lastLyricIdx = -1;
     fitTitle(); // 전체화면이면 제목을 한 줄에 맞추고, 아니면 원래 크기로 (창 크기가 바뀐 뒤에는 resize에서 한 번 더)
+    refitLyricLines();
 }
 
 // 스페이스: 재생/일시정지, ← / →: 5초 이동 (소리를 부드럽게 줄였다가 동작하는 처리는 Tampermonkey 쪽에서)
