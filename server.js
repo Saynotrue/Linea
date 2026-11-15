@@ -64,6 +64,72 @@ app.post('/seek', (req, res) => {
     res.json({ ok: true });
 });
 
+// 위젯 앨범 아트 자리에 띄우는 영상 (소리 없이, 유튜브 뮤직 재생 위치에 맞춰 따라감)
+//   위젯 화면은 file:// 주소라 유튜브 임베드가 재생을 거부하므로(오류 153) 이 서버 주소의 페이지 안에서 플레이어를 띄움
+//   위젯 → postMessage { type: 'sync', videoId, time(초), playing, tolerance, lead, minSeekGap }
+//     tolerance: 이만큼(초) 어긋나면 위치를 맞춤 / lead: 맞출 때 이만큼 앞으로 (이동 후 다시 재생되기까지 걸리는 시간만큼 늦어지므로)
+//     minSeekGap: 위치를 맞춘 뒤 이 시간(초) 동안은 다시 맞추지 않음 (계속 이동하면 버퍼링이 반복돼 끊김)
+//   페이지 → 위젯 { artVideo: 'playing' | 'error' | 'time' | 'size', ... }
+//     time: 실제 재생 위치(0.25초마다. 위젯이 배경 영상을 앨범 아트 자리 영상에 맞추는 데 사용)
+//     size: 영상 원본 크기 (유튜브 프레임 안의 영상 크기는 메인 프로세스가 넣은 스크립트가 알려 줌 → 그대로 위젯에 전달)
+const ART_VIDEO_PAGE = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}#p{position:absolute;inset:0;width:100%;height:100%}</style>
+</head><body><div id="p"></div>
+<script>
+let player = null, ready = false, want = null, loadedId = null, lastSeekAt = 0;
+const tell = (msg) => parent.postMessage({ artVideo: msg.state, ...msg }, '*');
+// 자막은 항상 끔 (올린 사람이 기본으로 켜 둔 자막도. 영상이 바뀌거나 다시 재생될 때 다시 켜지므로 재생될 때마다)
+function hideCaptions() {
+    for (const name of ['captions', 'cc']) { try { player.unloadModule(name); } catch (e) { } }
+    try { player.setOption('captions', 'track', {}); } catch (e) { }
+}
+function apply() {
+    if (!ready || !want) return;
+    if (want.videoId !== loadedId) {
+        loadedId = want.videoId;
+        player.loadVideoById({ videoId: want.videoId, startSeconds: want.time });
+        if (!want.playing) setTimeout(() => player.pauseVideo(), 300);
+        return;
+    }
+    const state = player.getPlayerState();
+    // 영상이 끝났거나(0) 짝 영상이 곡보다 짧으면 그대로 둠
+    const duration = player.getDuration() || 0;
+    const target = duration ? Math.min(want.time, duration - 0.2) : want.time;
+    const lead = want.playing ? (want.lead ?? 0.1) : 0;
+    if (Math.abs(player.getCurrentTime() - target) > (want.tolerance || 0.6) && Date.now() - lastSeekAt > (want.minSeekGap || 0) * 1000) {
+        lastSeekAt = Date.now();
+        player.seekTo(duration ? Math.min(target + lead, duration - 0.2) : target + lead, true);
+    }
+    if (want.playing && state !== 1 && state !== 3) player.playVideo();
+    if (!want.playing && state === 1) player.pauseVideo();
+}
+window.addEventListener('message', (e) => {
+    if (e.data?.artVideoSize) return tell({ state: 'size', videoId: loadedId, ...e.data.artVideoSize });
+    if (e.data?.type !== 'sync') return;
+    want = e.data;
+    apply();
+});
+setInterval(() => {
+    if (ready && loadedId) tell({ state: 'time', videoId: loadedId, time: player.getCurrentTime(), playing: player.getPlayerState() === 1 });
+}, 250);
+window.onYouTubeIframeAPIReady = () => {
+    player = new YT.Player('p', {
+        width: '100%', height: '100%',
+        playerVars: { autoplay: 1, mute: 1, controls: 0, cc_load_policy: 0, disablekb: 1, fs: 0, rel: 0, iv_load_policy: 3, playsinline: 1, modestbranding: 1, origin: location.origin },
+        events: {
+            onReady: () => { ready = true; player.mute(); apply(); },
+            onStateChange: (e) => { if (e.data === 1) { hideCaptions(); tell({ state: 'playing', videoId: loadedId }); } },
+            // 101·150: 퍼가기 금지 영상, 100: 없는 영상, 153: 재생 주소 문제
+            onError: (e) => tell({ state: 'error', code: e.data, videoId: loadedId }),
+        },
+    });
+};
+</script>
+<script src="https://www.youtube.com/iframe_api"></script>
+</body></html>`;
+app.get('/art-video', (req, res) => res.type('html').send(ART_VIDEO_PAGE));
+
 app.post('/update-state', (req, res) => {
     playerState = req.body;
     res.json({ ok: true });

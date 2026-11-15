@@ -44,7 +44,8 @@ let appConfig = {
     trayIcon: 'player',
     showLyrics: false, // 전체화면 가사 창 (기본: 숨김 → 곡 정보가 가운데)
     showTranslation: false, // 전체화면 가사 번역 (원문 아래에 한국어 번역)
-    aiTranslation: true // AI 문맥 번역 사용 (끄면 NVIDIA 키가 있어도 구글 번역만)
+    aiTranslation: true, // AI 문맥 번역 사용 (끄면 NVIDIA 키가 있어도 구글 번역만)
+    videoBackground: 'blur' // 영상으로 볼 때의 배경: 'blur'(같은 영상을 흐리게) | 'album'(앨범 아트 색. 영상을 하나만 재생해 가벼움)
 };
 
 function initSettings() {
@@ -174,7 +175,8 @@ const AmbientPaint = (() => {
     //   blur: 작은 캔버스 안에서 주는 흐림 (전체화면은 CSS로 화면 크기에 흐림을 주면 GPU 부담이 커서 여기서 줌.
     //         캔버스 1칸이 화면에서 약 26px이라 1.5칸 ≈ 예전 CSS blur(40px)). LP는 작아서 CSS 흐림 그대로
     const TARGETS = [
-        { id: 'ambient-canvas', blur: 'blur(1.5px) saturate(1.1)', visible: () => document.body.classList.contains('fullscreen-mode') },
+        // 영상 배경이 화면을 완전히 덮은 동안(art-video-bg-covered, app.js ArtVideo)은 보이지 않으므로 그리지 않음
+        { id: 'ambient-canvas', blur: 'blur(1.5px) saturate(1.1)', visible: () => document.body.classList.contains('fullscreen-mode') && !document.body.classList.contains('art-video-bg-covered') },
         { id: 'lp-ambient-canvas', visible: () => !document.body.classList.contains('fullscreen-mode') && !!document.getElementById('lp-mode')?.classList.contains('mode-active') },
     ];
     let targets = [], image = null, source = null, sourceCtx = null;
@@ -1130,6 +1132,7 @@ function toggleFullscreen() {
     }
     wakeFromIdle(); // 전체화면이면 숨김 타이머 시작, 아니면 숨김 해제
     if (!isFullscreen) setVolumePopover(false);
+    ArtVideo.update(); // 전체화면을 나가면 영상을 멈추고, 다시 들어오면 이어서 보여 줌
     lastLyricIdx = -1;
     fitTitle(); // 전체화면이면 제목을 한 줄에 맞추고, 아니면 원래 크기로 (창 크기가 바뀐 뒤에는 resize에서 한 번 더)
     refitLyricLines();
@@ -1208,6 +1211,220 @@ const bodyObserver = new MutationObserver(() => setTimeout(updateTrackHeight, 50
 bodyObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
 // ═════════════════════════════════════════════════════════════
+//  🎬 전체화면 앨범 아트 ↔ 영상 전환
+//    앨범 아트를 누르면 그 자리에 유튜브 뮤직과 연결된 영상(음원이면 짝 뮤직비디오)을 소리 없이 띄우고,
+//    유튜브 뮤직 재생 위치에 맞춰 따라가게 함. 영상을 누르면 다시 앨범 아트
+//    영상 페이지는 서버(/art-video)가 제공 (file:// 위젯 화면에서는 유튜브 임베드가 재생되지 않음)
+// ═════════════════════════════════════════════════════════════
+const ArtVideo = (() => {
+    const FRAME_URL = 'http://127.0.0.1:8888/art-video';
+    const SYNC_MS = 1000;
+    const FADE_OUT_MS = 900;
+    const BG_FADE_IN_MS = 950; // 영상 배경이 다 나타나는 시간 (style.css #art-video-bg 전환 0.9초 + 여유)   // 끌 때 영상·배경이 사라지는 시간 (style.css의 전환 시간과 같게). 그 뒤에 영상 페이지를 비움
+    let wanted = false;        // 사용자가 영상 보기를 켰는지 (곡이 바뀌어도 유지)
+    let linked = null;         // 지금 곡의 영상 정보 { videoId, segments }
+    let shownVideoId = null;   // 지금 화면에 재생 중인 영상
+    const readyFrames = new Set(); // 영상 페이지를 다 불러온 프레임
+    let timer = null;
+    let teardownTimer = null;
+    let coverTimer = null;
+    let pausedMs = null;       // 일시정지 중의 재생 위치 (일시정지 중에는 localProgress가 갱신되지 않음)
+    let mainTimeAt = 0;        // 앨범 아트 자리 영상이 마지막으로 실제 재생 위치를 알려 준 시각
+    let videoRatio = 16 / 9;   // 영상 원본 비율 (유튜브 프레임 안의 영상 크기로 받음)
+    // 배경 영상이 앨범 아트 자리 영상과 0.25초 넘게 어긋나면 0.1초 앞으로(이동에 걸리는 시간만큼) 맞추되, 맞춘 뒤 2초 동안은 다시 맞추지 않음
+    //   (0.12초 기준으로 앞당김 없이 맞추면 이동하는 동안 또 늦어져 1초에 4번씩 이동 → 버퍼링이 반복돼 두 영상 모두 끊김)
+    const BG_SYNC = { tolerance: 0.25, lead: 0.1, minSeekGap: 2 };
+    const blocked = new Set(); // 퍼가기 금지 등으로 재생할 수 없는 영상
+
+    // 앨범 아트 자리 영상(재생 시작·오류를 알려 줌) + 배경 영상(같은 영상을 흐리게, 소리·오류 무시)
+    const frame = () => document.getElementById('art-video-frame');
+    const bgFrame = () => document.getElementById('art-video-bg-frame');
+    const allFrames = () => [frame(), bgFrame()];
+    // 설정 '영상 배경'이 블러일 때만 배경 영상을 띄움 (앨범아트 색이면 영상 하나만 재생)
+    const blurBackground = () => appConfig.videoBackground !== 'album';
+    const frames = () => blurBackground() ? allFrames() : [frame()];
+
+    // 배경 영상 페이지를 비움 (다운로드 중지)
+    function clearBackground() {
+        const f = bgFrame();
+        if (f.src && f.src !== 'about:blank') { f.src = 'about:blank'; readyFrames.delete(f); }
+        document.body.classList.remove('art-video-bg-ready');
+    }
+    const active = () => wanted && isFullscreen && !!linked && !blocked.has(linked.videoId);
+
+    // 곡 시간 → 영상 시간 (음원과 뮤직비디오는 전주·간주 길이가 달라 구간 대응표로 변환)
+    function toVideoMs(ms) {
+        const segs = linked?.segments || [];
+        if (segs.length === 0) return ms;
+        let seg = segs.find(([from, , len]) => ms >= from && ms < from + len);
+        if (!seg) seg = [...segs].reverse().find(([from]) => ms >= from) || segs[0];
+        return Math.max(0, seg[1] + (ms - seg[0]));
+    }
+
+    function currentMs() {
+        if (pausedMs !== null) return pausedMs;
+        if (isPlaying && lastSyncTime !== null) return localProgress + (performance.now() - lastSyncTime);
+        return localProgress;
+    }
+
+    function send() {
+        if (!active()) return;
+        // 0.6초 넘게 어긋나면 0.1초 앞으로 맞춤 (맞춘 뒤 1.5초 동안은 다시 맞추지 않음)
+        const msg = { type: 'sync', videoId: linked.videoId, time: toVideoMs(currentMs()) / 1000, playing: pausedMs === null && isPlaying, tolerance: 0.6, lead: 0.1, minSeekGap: 1.5 };
+        if (readyFrames.has(frame())) frame().contentWindow?.postMessage(msg, '*');
+        // 배경 영상은 앨범 아트 자리 영상의 실제 위치를 따라감 (아래 'time'). 그 소식이 끊겼을 때(불러오는 중 등)만 곡 시간으로
+        if (readyFrames.has(bgFrame()) && performance.now() - mainTimeAt > 2000) bgFrame().contentWindow?.postMessage(msg, '*');
+    }
+
+    // 배경 영상을 앨범 아트 자리 영상의 실제 재생 위치에 맞춤 (둘이 각자 곡 시간을 따라가면 서로 최대 1초 남짓 어긋남)
+    function followMain({ videoId, time, playing }) {
+        if (!active() || videoId !== linked.videoId) return;
+        mainTimeAt = performance.now();
+        if (readyFrames.has(bgFrame())) bgFrame().contentWindow?.postMessage({ type: 'sync', videoId, time, playing, ...BG_SYNC }, '*');
+    }
+
+    // 영상 원본 비율 → 영상 상자(style.css --video-ratio)와 배경 영상 크기에 반영 (검은 띠 없이)
+    function setRatio(width, height) {
+        const ratio = width / height;
+        if (!Number.isFinite(ratio) || ratio <= 0 || Math.abs(ratio - videoRatio) < 0.01) return;
+        videoRatio = ratio;
+        document.documentElement.style.setProperty('--video-ratio', ratio.toFixed(4));
+        sizeBackground();
+    }
+
+    // 배경 영상: 원본 비율의 작은 플레이어(짧은 변 200px 이상, 저화질)를 창을 넉넉히 덮도록 확대 (흐린 가장자리가 보이지 않게 1.2배 더)
+    function sizeBackground() {
+        // 높이 200 기준, 폭이 356보다 좁으면(세로로 긴 영상 등) 폭 356 기준
+        let width = 200 * videoRatio, height = 200;
+        if (width < 356) { width = 356; height = 356 / videoRatio; }
+        const root = document.documentElement.style;
+        root.setProperty('--art-bg-w', `${Math.round(width)}px`);
+        root.setProperty('--art-bg-h', `${Math.round(height)}px`);
+        root.setProperty('--art-bg-scale', (Math.max(innerWidth / width, innerHeight / height) * 1.2).toFixed(2));
+    }
+
+    // 영상 보이기/숨기기. 영상 배경이 다 나타나면 art-video-bg-covered 표시 → 그 아래 물감 배경(AmbientPaint)이 그리기를 멈춤
+    //   (가려져서 보이지 않는 애니메이션에 쓰던 CPU·GPU를 아낌. 영상을 끄면 바로 표시를 지워 물감 배경이 다시 그려진 상태로 드러남)
+    // 흐린 영상 배경이 화면을 다 덮었음을 표시 (블러 배경일 때만. 앨범아트 색 배경이면 물감 배경이 보이므로 계속 그림)
+    //   영상이 보이고(art-video-on) 배경 영상도 재생이 시작된(art-video-bg-ready) 뒤, 배경이 다 나타나는 시간만큼 지나서
+    function markCovered() {
+        const body = document.body.classList;
+        if (body.contains('art-video-on') && body.contains('art-video-bg-ready') && blurBackground()) body.add('art-video-bg-covered');
+    }
+    function scheduleCover() {
+        clearTimeout(coverTimer);
+        coverTimer = setTimeout(markCovered, BG_FADE_IN_MS);
+    }
+
+    function setShown(shown) {
+        const body = document.body.classList;
+        if (shown === body.contains('art-video-on')) return;
+        body.toggle('art-video-on', shown);
+        clearTimeout(coverTimer);
+        if (shown) scheduleCover();
+        else body.remove('art-video-bg-covered');
+    }
+
+    // 영상 페이지를 비우고 영상 상자를 화면에서 뺌 (영상 다운로드 중지)
+    function teardown() {
+        clearTimeout(teardownTimer);
+        teardownTimer = null;
+        document.body.classList.remove('art-video-loading');
+        for (const f of allFrames()) if (f.src && f.src !== 'about:blank') { f.src = 'about:blank'; readyFrames.delete(f); }
+        document.body.classList.remove('art-video-bg-ready');
+        shownVideoId = null;
+    }
+
+    function update() {
+        const on = active();
+        if (!on || shownVideoId !== linked?.videoId) setShown(false);
+        if (on) {
+            // 사라지는 중에 다시 켜면 그대로 이어서 보여 줌 (영상 페이지가 남아 있고 같은 영상이면 바로 드러냄)
+            clearTimeout(teardownTimer);
+            teardownTimer = null;
+            // 영상 상자를 먼저 보이게 한 뒤 영상 페이지를 불러옴 (숨긴 상태로 불러오면 유튜브 플레이어가 그려지지 않음)
+            document.body.classList.add('art-video-loading');
+            if (shownVideoId && shownVideoId === linked.videoId) setShown(true);
+            // 영상 페이지는 처음 켤 때만 불러옴 (곡이 바뀌면 같은 페이지에서 영상만 바꿈)
+            for (const f of frames()) if (!f.src.startsWith(FRAME_URL)) { readyFrames.delete(f); f.src = FRAME_URL; }
+            if (!timer) timer = setInterval(send, SYNC_MS);
+            send();
+        } else {
+            clearInterval(timer);
+            timer = null;
+            // 전체화면을 나가면 바로 정리, 영상만 끄면 영상·배경이 서서히 사라진 뒤 정리
+            if (!isFullscreen) teardown();
+            else if (document.body.classList.contains('art-video-loading') && !teardownTimer) teardownTimer = setTimeout(teardown, FADE_OUT_MS);
+        }
+    }
+
+    function init() {
+        for (const f of allFrames()) f.addEventListener('load', () => { if (f.src.startsWith(FRAME_URL)) readyFrames.add(f); else readyFrames.delete(f); send(); });
+        sizeBackground();
+        window.addEventListener('resize', sizeBackground);
+        document.getElementById('album-art').addEventListener('click', () => {
+            if (!isFullscreen) return;
+            if (!linked) return showToast('이 곡은 연결된 영상이 없어요', 1800);
+            if (blocked.has(linked.videoId)) return showToast('이 영상은 앱에서 재생할 수 없어요', 2000);
+            wanted = true;
+            update();
+        });
+        document.getElementById('art-video-shield').addEventListener('click', () => { wanted = false; update(); });
+        window.addEventListener('message', (e) => {
+            if (!e.data?.artVideo) return;
+            const fromMain = e.source === frame().contentWindow;
+            if (!fromMain && e.source !== bgFrame().contentWindow) return;
+            if (e.data.artVideo === 'size') return setRatio(e.data.width, e.data.height);
+            if (!fromMain) {
+                // 배경 영상이 재생되기 시작하면 흐린 배경을 드러냄 (불러오는 동안 검은 배경이 보이지 않게). 오류는 무시
+                if (e.data.artVideo === 'playing' && blurBackground() && !document.body.classList.contains('art-video-bg-ready')) {
+                    document.body.classList.add('art-video-bg-ready');
+                    scheduleCover();
+                }
+                return;
+            }
+            if (e.data.artVideo === 'time') return followMain(e.data);
+            if (e.data.artVideo === 'playing' && e.data.videoId === linked?.videoId && active()) {
+                shownVideoId = e.data.videoId;
+                setShown(true);
+            } else if (e.data.artVideo === 'error' && e.data.videoId) {
+                blocked.add(e.data.videoId);
+                if (e.data.videoId === linked?.videoId) {
+                    showToast('이 영상은 앱에서 재생할 수 없어요', 2000);
+                    update();
+                }
+            }
+        });
+    }
+
+    // 서버 폴링마다 지금 곡의 영상 정보를 받음
+    function setTrack(track) {
+        const next = track?.linkedVideo?.videoId ? track.linkedVideo : null;
+        pausedMs = track?.playing ? null : (track?.progress || 0);
+        const changed = next?.videoId !== linked?.videoId;
+        linked = next;
+        if (changed || wanted) update();
+    }
+
+    // 설정에서 '영상 배경'을 바꿨을 때: 영상을 보는 중이면 배경을 겹쳐 바꿈
+    //   블러 → 앨범아트 색: 흐린 영상이 서서히 사라진 뒤 배경 영상을 비움 (물감 배경은 바로 다시 그림)
+    //   앨범아트 색 → 블러: 배경 영상을 불러와 서서히 나타냄 (다 덮은 뒤 물감 배경을 멈춤)
+    function applyBackgroundSetting() {
+        clearTimeout(coverTimer);
+        if (!blurBackground()) {
+            document.body.classList.remove('art-video-bg-covered');
+            setTimeout(() => { if (!blurBackground()) clearBackground(); }, FADE_OUT_MS);
+        } else {
+            scheduleCover(); // 배경 영상이 이미 재생 중이면(바로 되돌린 경우) 다시 덮음 표시
+        }
+        update();
+    }
+
+    return { init, setTrack, update, applyBackgroundSetting };
+})();
+ArtVideo.init();
+
+// ═════════════════════════════════════════════════════════════
 //  6. 🔄 서버 폴링 & 앨범 아트 추출 & 진행바
 // ═════════════════════════════════════════════════════════════
 async function syncWithServer() {
@@ -1229,6 +1446,9 @@ async function syncWithServer() {
         if (track.sampledAt && track.sampledAt < lastSeekAt && lastSyncTime !== null) {
             track.progress = localProgress + (fetchedAt - lastSyncTime);
         }
+
+        // 전체화면 앨범 아트 자리 영상: 지금 곡의 영상 정보 전달 (일시정지 중에도)
+        ArtVideo.setTrack(track);
 
         // 1. 재생 상태 확인 및 이퀄라이저 제어
         if (!track.playing) {
@@ -1774,6 +1994,7 @@ function applyConfigToUI() {
     document.querySelectorAll('.theme-pill[data-theme]').forEach(btn => btn.classList.toggle('active', btn.dataset.theme === appConfig.theme));
     document.querySelectorAll('.widget-style-pills .theme-pill').forEach(btn => btn.classList.toggle('active', btn.dataset.widget === appConfig.widgetStyle));
     document.querySelectorAll('.tray-icon-pills .theme-pill').forEach(btn => btn.classList.toggle('active', btn.dataset.icon === appConfig.trayIcon));
+    document.querySelectorAll('.video-bg-pills .theme-pill').forEach(btn => btn.classList.toggle('active', btn.dataset.videoBg === (appConfig.videoBackground === 'album' ? 'album' : 'blur')));
 }
 
 function applyConfigToApp() {
@@ -1785,6 +2006,8 @@ function applyConfigToApp() {
     }
     document.body.setAttribute('data-theme', appConfig.theme);
     document.body.classList.toggle('show-lyrics', !!appConfig.showLyrics);
+    // 영상으로 볼 때 흐린 영상 배경 사용 여부 (style.css, ArtVideo)
+    document.body.classList.toggle('art-video-blur', appConfig.videoBackground !== 'album');
     document.getElementById('btn-lyrics')?.setAttribute('aria-pressed', String(!!appConfig.showLyrics));
     document.getElementById('btn-lyrics')?.classList.toggle('active', !!appConfig.showLyrics);
     document.getElementById('btn-translate')?.classList.toggle('active', !!appConfig.showTranslation);
@@ -1909,6 +2132,14 @@ document.querySelectorAll('.widget-style-pills .theme-pill').forEach(btn => {
 });
 document.querySelectorAll('.tray-icon-pills .theme-pill').forEach(btn => {
     btn.addEventListener('click', (e) => { appConfig.trayIcon = e.currentTarget.dataset.icon; saveSettings(); applyConfigToUI(); });
+});
+document.querySelectorAll('.video-bg-pills .theme-pill').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+        appConfig.videoBackground = e.currentTarget.dataset.videoBg;
+        saveSettings();
+        applyConfigToUI();
+        ArtVideo.applyBackgroundSetting(); // 영상을 보는 중이면 배경을 바로 바꿈
+    });
 });
 
 // ═════════════════════════════════════════════════════════════

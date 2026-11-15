@@ -12,6 +12,17 @@
     <canvas id="ambient-canvas"></canvas>
   </div>
 
+  <!-- 🎬 영상을 볼 때의 배경: 같은 영상을 작게(저화질) 띄워 화면 가득 확대하고 흐리게 (app.js ArtVideo) -->
+  <div id="art-video-bg" aria-hidden="true">
+    <iframe id="art-video-bg-frame" title="배경 영상" tabindex="-1" allow="autoplay; encrypted-media"></iframe>
+  </div>
+
+  <!-- 🎬 전체화면 앨범 아트 자리의 영상 (앨범 아트를 누르면 전환, app.js ArtVideo). 위의 투명 막이 클릭을 받아 다시 앨범 아트로 -->
+  <div id="art-video" aria-hidden="true">
+    <iframe id="art-video-frame" title="영상" allow="autoplay; encrypted-media"></iframe>
+    <div id="art-video-shield" title="앨범 아트로 돌아가기"></div>
+  </div>
+
   <!-- 🎵 1. 기존 가사 바 모드 -->
   <div id="bar-mode" class="mode-active">
     <div id="bar">
@@ -138,6 +149,15 @@
           <button class="theme-pill" data-icon="player">Note</button>
           <button class="theme-pill" data-icon="spectrum">Spectrum</button>
         </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">영상 배경</div>
+        <div class="theme-pills video-bg-pills">
+          <button class="theme-pill" data-video-bg="blur">영상 블러</button>
+          <button class="theme-pill" data-video-bg="album">앨범아트 색</button>
+        </div>
+        <div class="shortcut-hint">전체화면에서 앨범아트를 눌러 영상으로 볼 때의 배경 · 앨범아트 색이 더 가벼움</div>
       </div>
 
       <div class="settings-section">

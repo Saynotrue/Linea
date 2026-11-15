@@ -1508,3 +1508,151 @@ body.fullscreen-mode #sync-toast {
     font-size: 16px;
     padding: 10px 20px;
 }
+
+/* ─── 전체화면: 앨범 아트 ↔ 영상 전환 (app.js ArtVideo) ─── */
+/* 앨범 아트를 누를 수 있게 (창 끌기 영역에서 제외) */
+body.fullscreen-mode #album-art {
+    -webkit-app-region: no-drag;
+    cursor: pointer;
+}
+
+/* 영상은 앨범 아트와 같은 정사각형 영역(--art-size) 안에서 16:9로 가운데 정렬
+   🚨 visibility: hidden / display: none 상태에서 영상 페이지를 불러오면 그 안의 유튜브 플레이어가 끝내 그려지지 않음(검은 화면)
+      → 켜는 동안(art-video-loading)은 투명도(opacity)로만 숨기고, 재생이 시작되면(art-video-on) 드러냄
+   🚨 앨범 아트 아래 층에 두면 전체화면 바(#bar)의 배경 흐림(backdrop-filter)에 가려 영상이 흐려지므로 바보다 위 층(z-index 2) */
+#art-video {
+    display: none;
+}
+
+body.fullscreen-mode.art-video-loading #art-video {
+    --art-size: max(45vh, 300px);
+    /* 영상 원본 비율(--video-ratio, app.js가 영상 크기로 설정. 모를 때는 16:9) 그대로 앨범 아트 정사각형 영역 안에 맞춤 → 검은 띠 없음 */
+    --ratio: var(--video-ratio, 1.7778);
+    --video-w: min(var(--art-size), var(--art-size) * var(--ratio));
+    display: block;
+    position: fixed;
+    left: calc(var(--fs-left) + (var(--art-size) - var(--video-w)) / 2);
+    top: calc(15vh + (var(--art-size) - var(--video-w) / var(--ratio)) / 2);
+    width: var(--video-w);
+    height: calc(var(--video-w) / var(--ratio));
+    border-radius: 16px;
+    overflow: hidden;
+    background: #000;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+    z-index: 2;
+    opacity: 0;
+    pointer-events: none;
+    -webkit-app-region: no-drag;
+    /* 켤 때·끌 때 모두 앨범 아트와 같은 속도로 겹쳐 바뀜 (끌 때는 크게 보던 영상도 원래 크기로 줄어들며 사라짐) */
+    transition: opacity 0.6s ease, left 0.5s cubic-bezier(0.33, 0.5, 0.2, 1), top 0.5s cubic-bezier(0.33, 0.5, 0.2, 1),
+        width 0.5s cubic-bezier(0.33, 0.5, 0.2, 1), height 0.5s cubic-bezier(0.33, 0.5, 0.2, 1);
+}
+
+/* 영상 ↔ 앨범 아트가 겹쳐 바뀌도록 앨범 아트도 같은 속도로 (영상 모드에서만. 곡이 바뀔 때의 원래 전환은 그대로) */
+body.fullscreen-mode.art-video-loading #album-art {
+    transition: opacity 0.6s ease, left 0.5s cubic-bezier(0.33, 0.5, 0.2, 1);
+}
+
+/* 영상이 실제로 재생되기 시작하면 앨범 아트 대신 보여 줌 (불러오는 동안은 앨범 아트 유지) */
+body.fullscreen-mode.art-video-loading.art-video-on #art-video {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+body.fullscreen-mode.art-video-loading.art-video-on #album-art {
+    opacity: 0 !important;
+    pointer-events: none;
+}
+
+/* 가사 창을 숨긴 상태에서 영상이면 크게: 앨범 아트 영역 높이(45vh)를 꽉 채우는 원본 비율, 화면 가운데
+   (아래의 곡 정보·재생 버튼 위치는 그대로. 가로로 아주 긴 영상이거나 창이 좁으면 화면 폭의 90%까지만) */
+body.fullscreen-mode.art-video-loading.art-video-on:not(.show-lyrics) #art-video {
+    --video-w: min(var(--art-size) * var(--ratio), 90vw);
+    left: calc(50vw - var(--video-w) / 2);
+}
+
+/* 영상을 볼 때의 배경: 같은 영상을 작게(356×200) 띄워 저화질로 받고, 화면을 덮을 만큼 확대한 뒤 흐리게
+   (유튜브는 200px보다 작은 플레이어의 재생을 거부할 수 있어 높이 200. 확대 배율 --art-bg-scale은 app.js가 창 크기로 계산)
+   🚨 앨범 아트 자리 영상과 같은 이유로 숨김은 투명도로만 (visibility/display로 숨긴 채 불러오면 그려지지 않음) */
+#art-video-bg {
+    display: none;
+}
+
+body.fullscreen-mode.art-video-loading #art-video-bg {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    background: #000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.9s ease; /* app.js FADE_OUT_MS와 같게 (사라진 뒤에 영상을 정리) */
+}
+
+/* 설정 '영상 배경'이 블러(art-video-blur)이고 배경 영상이 재생되기 시작한 뒤(art-video-bg-ready)에만 드러냄
+   (앨범아트 색이면 흐린 영상 대신 원래 물감 배경 그대로) */
+body.fullscreen-mode.art-video-loading.art-video-on.art-video-blur.art-video-bg-ready #art-video-bg {
+    opacity: 1;
+}
+
+#art-video-bg-frame {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    /* 원본 비율의 작은 플레이어 (app.js sizeBackground가 크기·배율 계산) → 배경에 검은 띠가 번지지 않음 */
+    width: var(--art-bg-w, 356px);
+    height: var(--art-bg-h, 200px);
+    border: 0;
+    pointer-events: none;
+    /* 흐림은 확대 전 크기 기준이라 실제로는 배율만큼 커짐 (6px × 약 6배 ≈ 36px) */
+    /* 영상 모드에서는 글자가 항상 흰색이므로 밝은 영상(하얀 배경 장면 등)에서도 읽히게 어둡게 */
+    filter: blur(6px) saturate(1.3) brightness(0.6);
+    transform: translate(-50%, -50%) scale(var(--art-bg-scale, 8));
+}
+
+/* 영상 모드의 글자 색: 흐린 영상 배경일 때는 앨범 아트 색으로 정한 색(밝은 앨범이면 검은 글자) 대신 항상 흰 글자 (어둡게 흐린 영상 배경 위)
+   앨범아트 색 배경을 고른 경우는 원래대로 앨범 아트 색 기준
+   app.js가 문서(html)에 넣는 색 값을 body에서 덮어씀. 영상을 끄면 다시 앨범 아트 색 */
+body.fullscreen-mode.art-video-loading.art-video-on.art-video-blur.art-video-bg-ready {
+    --ui-primary: #ffffff;
+    --ui-secondary: rgba(255, 255, 255, 0.7);
+    --ui-lyric-dim: rgba(255, 255, 255, 0.4);
+    --ui-glow: rgba(255, 255, 255, 0.8);
+    --ui-glow-dim: rgba(255, 255, 255, 0.5);
+    --ui-bg: rgba(255, 255, 255, 0.15);
+    --ui-surface: rgba(36, 36, 36, 0.5);
+    --ui-surface-hover: rgba(255, 255, 255, 0.1);
+    --ui-surface-active: rgba(255, 255, 255, 0.18);
+    --theme-color: #ffffff;
+}
+
+/* 곡 제목·가수는 app.js가 글자 색을 직접 지정하므로(앨범 아트가 밝으면 검은색) 영상 모드에서 따로 덮어씀 */
+body.fullscreen-mode.art-video-loading.art-video-on.art-video-blur.art-video-bg-ready #title {
+    color: #ffffff !important;
+}
+
+body.fullscreen-mode.art-video-loading.art-video-on.art-video-blur.art-video-bg-ready #artist {
+    color: rgba(255, 255, 255, 0.7) !important;
+}
+
+#art-video-frame {
+    position: absolute;
+    /* 유튜브 플레이어 가장자리의 검은 띠가 둥근 모서리 밖으로 보이지 않게 살짝 키움 */
+    inset: -1px;
+    width: calc(100% + 2px);
+    height: calc(100% + 2px);
+    border: 0;
+    pointer-events: none;
+}
+
+/* 영상 위 투명 막: 유튜브 화면 조작 대신 클릭을 받아 앨범 아트로 돌아감 */
+#art-video-shield {
+    position: absolute;
+    inset: 0;
+    cursor: pointer;
+}
+
+body.fullscreen-mode.idle #art-video-shield {
+    cursor: none;
+}

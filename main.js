@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, Tray, Menu, nativeImage, nativeTheme, globalShortcut, ipcMain, powerSaveBlocker, safeStorage } = require('electron');
+const { app, BrowserWindow, screen, Tray, Menu, nativeImage, nativeTheme, globalShortcut, ipcMain, powerSaveBlocker, safeStorage, session, webFrameMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -103,6 +103,43 @@ app.whenReady().then(() => {
     });
 
     win.setAlwaysOnTop(true, 'screen-saver');
+    // 전체화면 앨범 아트 자리의 영상(서버의 /art-video 페이지 안 유튜브 플레이어)
+    //   많은 공식 뮤직비디오가 알 수 없는 사이트(127.0.0.1)에서의 재생을 막아(오류 150), 이 페이지가 보내는 요청만
+    //   유튜브 뮤직에서 연 것처럼 Referer를 바꿈 (위젯 창의 기본 세션만 해당. 다른 요청은 그대로)
+    session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['https://www.youtube.com/*'] }, (details, callback) => {
+        const headers = { ...details.requestHeaders };
+        const key = Object.keys(headers).find(k => k.toLowerCase() === 'referer');
+        if (key && headers[key].startsWith('http://127.0.0.1:8888/')) headers[key] = 'https://music.youtube.com/';
+        callback({ requestHeaders: headers });
+    });
+
+    // 앨범 아트 자리 영상: 유튜브 플레이어가 영상 위에 띄우는 제목·재생 버튼·공유·"동영상 더보기"·로고·추천 영상을 숨김
+    //   (다른 출처 프레임이라 위젯 화면에서는 스타일을 바꿀 수 없어, 메인 프로세스가 그 프레임에 직접 스타일을 넣음)
+    //   .ytPlayerControlsContainerHost: 지금 유튜브 임베드의 화면 조작 영역 전체, 나머지는 예전 플레이어 화면 요소
+    const ART_VIDEO_HIDE_CSS = '.ytPlayerControlsContainerHost, .ytp-player-content, .ytp-caption-window-container, .ytp-chrome-top, .ytp-chrome-bottom, '
+        + '.ytp-gradient-top, .ytp-gradient-bottom, .ytp-pause-overlay, .ytp-large-play-button, .ytp-bezel, .ytp-spinner, .ytp-watermark, '
+        + '.ytp-ce-element, .ytp-cards-teaser, .ytp-paid-content-overlay, .iv-branding, .html5-endscreen, .ytp-endscreen-content, .ytp-contextmenu '
+        + '{ display: none !important; }';
+    win.webContents.on('did-frame-finish-load', (event, isMainFrame, frameProcessId, frameRoutingId) => {
+        if (isMainFrame) return;
+        const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
+        // 영상 페이지(127.0.0.1:8888/art-video) 안의 유튜브 플레이어만
+        if (!frame?.url.startsWith('https://www.youtube.com/embed/') || !frame.parent?.url.startsWith('http://127.0.0.1:8888/art-video')) return;
+        // 영상 원본 크기도 알려 줌 (위젯이 영상 상자를 원본 비율로 맞춰 위아래·양옆 검은 띠를 없앰). 영상이 바뀌면 다시
+        frame.executeJavaScript(`(() => {
+            const s = document.createElement('style'); s.textContent = ${JSON.stringify(ART_VIDEO_HIDE_CSS)}; document.documentElement.appendChild(s);
+            let last = '';
+            setInterval(() => {
+                const v = document.querySelector('video');
+                if (!v || !v.videoWidth || !v.videoHeight) return;
+                const key = v.videoWidth + 'x' + v.videoHeight;
+                if (key === last) return;
+                last = key;
+                parent.postMessage({ artVideoSize: { width: v.videoWidth, height: v.videoHeight } }, '*');
+            }, 500);
+        })()`).catch(() => { });
+    });
+
     win.loadFile('renderer/index.html');
 
     // F11 전체화면 버그 방지

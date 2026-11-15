@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linea Connector (YouTube Music)
 // @namespace    http://tampermonkey.net/
-// @version      9.3
+// @version      9.4
 // @author       You
 // @match        https://music.youtube.com/*
 // @match        https://www.youtube.com/embed/*
@@ -298,6 +298,44 @@
         };
     }
 
+    // 위젯 앨범 아트 자리에 보여 줄 영상 (앨범 아트를 누르면 영상으로 전환)
+    //   지금 재생 중인 것이 영상(뮤직비디오 등)이면 그 영상, 음원(노래, 정지 이미지)이면 대기열 묶음의 짝인 뮤직비디오
+    //   음원과 뮤직비디오는 전주·간주 길이가 달라, 유튜브 뮤직이 주는 구간 대응표(segmentMap)로 시간을 맞춤
+    //   segments: [[지금 곡 시작 ms, 영상 시작 ms, 길이 ms], ...] (없으면 같은 시간으로 봄)
+    const linkedVideoCache = new Map();
+    function getLinkedVideo(currentVideoId, response) {
+        if (!currentVideoId) return null;
+        const type = response?.videoDetails?.videoId === currentVideoId ? response.videoDetails.musicVideoType : undefined;
+        // 음원(ATV)이 아니면 지금 영상을 그대로
+        if (type && type !== 'MUSIC_VIDEO_TYPE_ATV') return { videoId: currentVideoId, segments: [] };
+        if (linkedVideoCache.has(currentVideoId)) return linkedVideoCache.get(currentVideoId);
+
+        const items = [...document.querySelectorAll('ytmusic-player-queue ytmusic-player-queue-item')];
+        const item = items.find(i => queueItemVideoId(i) === currentVideoId);
+        const group = item?.closest(QUEUE_GROUP);
+        if (!group) return type ? null : { videoId: currentVideoId, segments: [] }; // 종류를 모르면 지금 영상
+        const data = group.data || group.__data?.data || {};
+        const primaryId = data.primaryRenderer?.playlistPanelVideoRenderer?.videoId;
+        const counterpart = data.counterpart?.[0];
+        const counterpartId = counterpart?.counterpartRenderer?.playlistPanelVideoRenderer?.videoId;
+        // 대응표를 못 읽으면 묶음 안의 다른 항목을 짝으로 사용
+        const otherId = counterpartId && primaryId
+            ? (currentVideoId === primaryId ? counterpartId : currentVideoId === counterpartId ? primaryId : null)
+            : [...group.querySelectorAll('ytmusic-player-queue-item')].map(queueItemVideoId).find(id => id && id !== currentVideoId);
+        let result = null;
+        if (otherId) {
+            const fromPrimary = currentVideoId === primaryId;
+            const segments = (counterpart?.segmentMap?.segment || []).map(s => {
+                const p = Number(s.primaryVideoStartTimeMilliseconds), c = Number(s.counterpartVideoStartTimeMilliseconds), d = Number(s.durationMilliseconds);
+                return fromPrimary ? [p, c, d] : [c, p, d];
+            }).filter(s => s.every(Number.isFinite));
+            result = { videoId: otherId, segments };
+        }
+        // 대기열이 아직 안 그려졌을 수 있으므로 찾은 경우만 저장
+        if (result) linkedVideoCache.set(currentVideoId, result);
+        return result;
+    }
+
     // =====================================================================
     // 1. 상태 및 가사 전송
     // =====================================================================
@@ -348,7 +386,8 @@
             // 위젯의 소리 조절 슬라이더에 현재 볼륨 표시 (0~100)
             volume: player?.getVolume ? player.getVolume() : (video ? Math.round(video.volume * 100) : undefined),
             muted: player?.isMuted ? player.isMuted() : !!video?.muted,
-            next: getNextTrack(info.videoId)
+            next: getNextTrack(info.videoId),
+            linkedVideo: getLinkedVideo(info.videoId, response)
         };
 
         fetch("http://127.0.0.1:8888/update-state", {
