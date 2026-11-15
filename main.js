@@ -2,6 +2,19 @@ const { app, BrowserWindow, screen, Tray, Menu, nativeImage, nativeTheme, global
 const path = require('path');
 const fs = require('fs');
 
+// ─── 앱 데이터 폴더 ─────────────────────
+// 앱 이름을 Linea로 바꾸기 전에 쓰던 데이터 폴더(설정, NVIDIA 키 파일)가 있으면 그 폴더를 계속 사용
+// (app.getPath('userData')를 처음 쓰기 전에 정해야 하므로 맨 위에서 처리)
+// Electron이 시작할 때 새 폴더를 먼저 만들어 두므로, 폴더가 있는지가 아니라 실제 데이터가 있는지로 판단
+{
+    const appData = app.getPath('appData');
+    const hasData = (dir) => ['Local Storage', 'nvidia-key.bin', 'Partitions'].some(f => fs.existsSync(path.join(dir, f)));
+    if (!hasData(app.getPath('userData'))) {
+        const legacyDir = ['music-lyrics-widget', 'Music Lyrics Widget'].map(n => path.join(appData, n)).find(hasData);
+        if (legacyDir) app.setPath('userData', legacyDir);
+    }
+}
+
 // ─── NVIDIA API 키 (AI 가사 번역용) ─────────────────────
 // 설정 창에서 입력한 키를 이 컴퓨터의 앱 데이터 폴더에 암호화해 저장 (macOS 키체인 / Windows DPAPI)
 // 서버(server.js)는 같은 프로세스에서 process.env.NVIDIA_API_KEY를 읽음. 설정 키 > 실행 시 환경 변수 > 셸 설정(~/.zshrc) 순
@@ -109,7 +122,7 @@ app.whenReady().then(() => {
     if (process.platform === 'darwin') trayIcon.setTemplateImage(true);
 
     tray = new Tray(trayIcon);
-    tray.setToolTip('LyricsBar');
+    tray.setToolTip('Linea');
 
     function changeTrayIcon(style) {
         currentIconStyle = style;

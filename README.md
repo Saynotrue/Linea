@@ -1,4 +1,4 @@
-# Music Lyrics Widget
+# Linea
 
 유튜브 뮤직에서 재생 중인 곡의 **싱크 가사**를 화면 위에 띄워 주는 데스크톱 위젯입니다.
 작은 바·LP 위젯으로 띄워 두거나, 전체화면으로 앨범 아트와 함께 가사를 크게 볼 수 있습니다.
@@ -17,12 +17,12 @@
 
 | 방식 | 설치할 것 | 음악 재생 위치 | 이런 분께 추천 |
 |---|---|---|---|
-| **A. 크롬 확장 프로그램** (추천) | 위젯 앱 + 확장 프로그램 | 크롬 계열 브라우저 | 브라우저에서 평소처럼 듣고 싶은 분 |
-| **B. Tampermonkey 스크립트** | 위젯 앱 + Tampermonkey + 스크립트 | 크롬 계열 브라우저 | 이미 Tampermonkey를 쓰고 있는 분 |
-| **C. Standalone 앱** | Standalone 앱 하나 | 앱 안의 유튜브 뮤직 창 | 브라우저 없이 앱 하나로 쓰고 싶은 분 |
+| **A. 크롬 확장 프로그램** (추천) | Linea + 확장 프로그램 Linea Connector | 크롬 계열 브라우저 | 브라우저에서 평소처럼 듣고 싶은 분 |
+| **B. Tampermonkey 스크립트** | Linea + Tampermonkey + 스크립트 | 크롬 계열 브라우저 | 이미 Tampermonkey를 쓰고 있는 분 |
+| **C. Linea Player** | Linea Player 하나 | 앱 안의 유튜브 뮤직 창 | 브라우저 없이 앱 하나로 쓰고 싶은 분 |
 
 - A와 B는 하는 일이 똑같습니다. 둘 다 켜 두면 재생 정보가 두 번 전송되니 하나만 켜 주세요.
-- C는 위젯이 들어 있는 별도 앱입니다. 일반 위젯 앱과 **동시에 실행할 수 없습니다** (같은 포트 8888, 8889를 사용).
+- C의 Linea Player는 위젯이 들어 있는 별도 앱입니다. Linea와 **동시에 실행할 수 없습니다** (같은 포트 8888, 8889를 사용).
 
 ---
 
@@ -30,48 +30,48 @@
 
 ### 1. 위젯 앱 설치 (A, B)
 
-> C(Standalone 앱)를 고르셨다면 [C. Standalone 앱](#c-standalone-앱)으로 건너뛰세요.
+> C(Linea Player)를 고르셨다면 [C. Linea Player](#c-linea-player-앱-하나로)로 건너뛰세요.
 
 [Releases](https://github.com/Saynotrue/youtube-music-third-party/releases) 페이지에서 운영체제에 맞는 파일을 받습니다.
 
 | 운영체제 | 파일 |
 |---|---|
-| macOS (Apple Silicon: M1 이상) | `Music.Lyrics.Widget-<버전>-arm64.dmg` |
-| Windows (설치형) | `Music.Lyrics.Widget.Setup.<버전>.exe` |
-| Windows (설치 없이 실행) | `Music.Lyrics.Widget.<버전>.exe` |
+| macOS (Apple Silicon: M1 이상) | `Linea-<버전>-arm64.dmg` |
+| Windows (설치형) | `Linea.Setup.<버전>.exe` |
+| Windows (설치 없이 실행) | `Linea.<버전>.exe` |
 
 #### macOS
 
 1. 받은 `.dmg` 파일을 엽니다.
-2. **Music Lyrics Widget** 아이콘을 **Applications(응용 프로그램)** 폴더로 끌어다 놓습니다.
+2. **Linea** 아이콘을 **Applications(응용 프로그램)** 폴더로 끌어다 놓습니다.
 3. 응용 프로그램 폴더에서 앱을 실행합니다.
 
 처음 실행할 때 아래와 같은 경고가 뜰 수 있습니다. 앱이 Apple 공증을 받지 않았기 때문이며, 다음 방법으로 열 수 있습니다.
 
 - **"확인되지 않은 개발자"라서 열 수 없다는 경고**
-  **시스템 설정 → 개인정보 보호 및 보안**으로 가서, 아래쪽의 "Music Lyrics Widget"이 차단되었다는 안내 옆 **그래도 열기**를 누릅니다.
+  **시스템 설정 → 개인정보 보호 및 보안**으로 가서, 아래쪽의 "Linea"가 차단되었다는 안내 옆 **그래도 열기**를 누릅니다.
 - **"손상되었기 때문에 열 수 없습니다" 경고**
   터미널에서 아래 명령을 한 번 실행한 뒤 다시 엽니다.
   ```bash
-  xattr -cr "/Applications/Music Lyrics Widget.app"
+  xattr -cr "/Applications/Linea.app"
   ```
 
 실행하면 화면 아래에 가사 바가 뜨고, 메뉴 막대에 트레이 아이콘이 생깁니다.
 
 #### Windows
 
-1. **설치형**: `Music.Lyrics.Widget.Setup.<버전>.exe`를 실행해 설치합니다.
-   **설치 없이 실행**: `Music.Lyrics.Widget.<버전>.exe`를 원하는 폴더에 두고 바로 실행합니다.
+1. **설치형**: `Linea.Setup.<버전>.exe`를 실행해 설치합니다.
+   **설치 없이 실행**: `Linea.<버전>.exe`를 원하는 폴더에 두고 바로 실행합니다.
 2. **"Windows의 PC 보호" (SmartScreen)** 창이 뜨면 **추가 정보 → 실행**을 누릅니다. 코드 서명을 하지 않은 앱이라 뜨는 안내입니다.
 3. 혹시 **Windows 방화벽** 허용 창이 뜨면 **허용**을 눌러도 됩니다. 위젯은 이 컴퓨터 안(127.0.0.1)에서만 브라우저와 통신하므로 외부 네트워크에는 열리지 않습니다.
 
 실행하면 화면 아래에 가사 바가 뜨고, 작업 표시줄 오른쪽 알림 영역에 트레이 아이콘이 생깁니다.
 
-### 2-A. 크롬 확장 프로그램 설치
+### 2-A. 크롬 확장 프로그램(Linea Connector) 설치
 
 Chrome, Edge, Whale 등 크롬 계열 브라우저(Chrome 111 이상)에서 동작합니다. 아직 크롬 웹 스토어에는 등록 전이라, 파일을 받아 직접 불러옵니다.
 
-1. [Releases](https://github.com/Saynotrue/youtube-music-third-party/releases)에서 `Music-Lyrics-Widget-Connector-<버전>.zip`을 받아 **압축을 풉니다.** 풀린 폴더는 지우지 말고 그대로 둡니다.
+1. [Releases](https://github.com/Saynotrue/youtube-music-third-party/releases)에서 `Linea-Connector-<버전>.zip`을 받아 **압축을 풉니다.** 풀린 폴더는 지우지 말고 그대로 둡니다.
 2. 브라우저에서 확장 프로그램 관리 화면을 엽니다: `chrome://extensions` (Edge: `edge://extensions`, Whale: `whale://extensions`)
 3. 오른쪽 위 **개발자 모드**를 켭니다.
 4. **압축해제된 확장 프로그램을 로드합니다**를 누르고, 1에서 풀어 둔 폴더(`manifest.json`이 들어 있는 폴더)를 고릅니다.
@@ -97,19 +97,19 @@ Chrome, Edge, Whale 등 크롬 계열 브라우저(Chrome 111 이상)에서 동�
 
 > 새 버전이 나오면 위젯 앱과 함께 Tampermonkey 스크립트도 최신 `tampermonkey.js`로 바꿔 주세요. 스크립트 맨 위 `@version`으로 버전을 확인할 수 있습니다.
 
-### C. Standalone 앱
+### C. Linea Player (앱 하나로)
 
 유튜브 뮤직이 앱 안의 창에서 열리는 버전입니다. 브라우저, 확장 프로그램, Tampermonkey가 필요 없습니다.
 
-1. [Releases](https://github.com/Saynotrue/youtube-music-third-party/releases)에서 운영체제에 맞는 파일을 받아 설치합니다. 설치 방법과 첫 실행 경고 대처법은 위 [1. 위젯 앱 설치](#1-위젯-앱-설치-a-b)와 같습니다. (macOS "손상" 경고 시: `xattr -cr "/Applications/Music Lyrics Widget Standalone.app"`)
+1. [Releases](https://github.com/Saynotrue/youtube-music-third-party/releases)에서 운영체제에 맞는 파일을 받아 설치합니다. 설치 방법과 첫 실행 경고 대처법은 위 [1. 위젯 앱 설치](#1-위젯-앱-설치-a-b)와 같습니다. (macOS "손상" 경고 시: `xattr -cr "/Applications/Linea Player.app"`)
 
    | 운영체제 | 파일 |
    |---|---|
-   | macOS (Apple Silicon: M1 이상) | `Music.Lyrics.Widget.Standalone-<버전>-arm64.dmg` |
-   | Windows (설치형) | `Music.Lyrics.Widget.Standalone.Setup.<버전>.exe` |
-   | Windows (설치 없이 실행) | `Music.Lyrics.Widget.Standalone.<버전>.exe` |
+   | macOS (Apple Silicon: M1 이상) | `Linea.Player-<버전>-arm64.dmg` |
+   | Windows (설치형) | `Linea.Player.Setup.<버전>.exe` |
+   | Windows (설치 없이 실행) | `Linea.Player.<버전>.exe` |
 
-2. 일반 위젯 앱이 켜져 있으면 먼저 종료합니다.
+2. Linea가 켜져 있으면 먼저 종료합니다.
 3. 앱을 실행하면 위젯과 함께 **유튜브 뮤직 창**이 열립니다. 오른쪽 위 **로그인**으로 구글 계정에 로그인합니다. 처음 한 번만 하면 로그인 상태가 유지됩니다.
 4. 유튜브 뮤직 창에서 곡을 재생하면 위젯에 가사가 나타납니다.
 
@@ -214,15 +214,15 @@ Chrome, Edge, Whale 등 크롬 계열 브라우저(Chrome 111 이상)에서 동�
 **위젯에 아무것도 나오지 않아요**
 - 위젯 앱이 실행 중인지, 확장 프로그램이나 Tampermonkey 스크립트가 켜져 있는지 확인합니다.
 - 유튜브 뮤직 탭을 새로고침합니다.
-- 다른 프로그램이 8888, 8889 포트를 쓰고 있으면 연결되지 않습니다. 일반 위젯 앱과 Standalone 앱을 동시에 켜지 않았는지도 확인합니다.
+- 다른 프로그램이 8888, 8889 포트를 쓰고 있으면 연결되지 않습니다. Linea와 Linea Player를 동시에 켜지 않았는지도 확인합니다.
 
 **엉뚱한 곡 정보가 나와요**
-- 브라우저와 Standalone 앱에서 동시에 재생하고 있거나, 확장 프로그램과 Tampermonkey 스크립트가 둘 다 켜져 있으면 재생 정보가 섞입니다. 한 곳만 남겨 주세요.
+- 브라우저와 Linea Player에서 동시에 재생하고 있거나, 확장 프로그램과 Tampermonkey 스크립트가 둘 다 켜져 있으면 재생 정보가 섞입니다. 한 곳만 남겨 주세요.
 
 **이퀄라이저가 움직이지 않아요**
-- 브라우저 정책상, 유튜브 뮤직 페이지를 한 번 클릭해야 소리 분석이 시작됩니다. (Standalone 앱은 클릭하지 않아도 됩니다.)
+- 브라우저 정책상, 유튜브 뮤직 페이지를 한 번 클릭해야 소리 분석이 시작됩니다. (Linea Player는 클릭하지 않아도 됩니다.)
 
-**Standalone 앱에서 로그인 후 Premium 안내 페이지만 보여요**
+**Linea Player에서 로그인 후 Premium 안내 페이지만 보여요**
 - 앱을 종료했다가 다시 실행합니다. 로그인된 상태에서 안내 페이지로 가면 자동으로 유튜브 뮤직으로 돌아갑니다.
 
 **"가사 없음"이 떠요**
@@ -260,4 +260,4 @@ npm run build      # 배포 파일 만들기 → dist/
   - `renderer/`: 위젯 화면
   - `tampermonkey.js`: 유튜브 뮤직 페이지에서 재생 정보·오디오 분석 데이터를 보내는 사용자 스크립트
   - `vendor/syncanto/`: 추가 가사 제공처 (Apple Music, NetEase, QQ Music, KuGou 등)
-- 크롬 확장 프로그램과 Standalone 앱은 이 저장소 옆의 별도 폴더(`youtube-music-widget-extension`, `youtube-music-widget-standalone`)에서 만듭니다. 둘 다 이 저장소의 `tampermonkey.js`를 그대로 가져다 씁니다.
+- 크롬 확장 프로그램(Linea Connector)과 Linea Player는 이 저장소 옆의 별도 폴더(`youtube-music-widget-extension`, `youtube-music-widget-standalone`)에서 만듭니다. 둘 다 이 저장소의 `tampermonkey.js`를 그대로 가져다 씁니다.

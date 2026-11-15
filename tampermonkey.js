@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         YouTube Music Ultimate Integration (Ultra Light v9.0)
+// @name         Linea Connector (YouTube Music)
 // @namespace    http://tampermonkey.net/
 // @version      9.3
 // @author       You
