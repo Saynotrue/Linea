@@ -420,9 +420,27 @@ function parseLRC(lrc) {
         const text = line.replace(/\[\d{2}:\d{2}\.\d{2,3}\]/g, '').trim();
         if (text) times.forEach(t => result.push({ time: t, text }));
     }
-    result.sort((a, b) => a.time - b.time);
-    splitEmbeddedTranslation(result);
-    return result;
+    result.sort((a, b) => a.time - b.time); // 같은 시간 줄은 파일에 적힌 순서 유지 (안정 정렬)
+    const merged = mergeSameTimeLines(result);
+    splitEmbeddedTranslation(merged);
+    return merged;
+}
+
+// lrclib에 올라온 가사 중 같은 시간에 "원문 줄 + 번역 줄"을 겹쳐 적은 경우가 있음
+//   예: [00:19.96]やっと眼を覚ましたかい / [00:19.96]Cuối cùng em cũng tỉnh lại rồi à? (베트남어 번역)
+//   → 같은 시간의 첫 줄만 가사로 쓰고, 뒤 줄이 한국어 번역이면 번역 줄로 사용, 그 외 언어는 버림
+function mergeSameTimeLines(lines) {
+    const out = [];
+    let koTr = 0;
+    for (const l of lines) {
+        const prev = out[out.length - 1];
+        if (!prev || prev.time !== l.time) { out.push(l); continue; }
+        if (!prev.tr && HANGUL_CHAR.test(l.text) && !HANGUL_CHAR.test(prev.text)) { prev.tr = l.text; koTr++; }
+    }
+    // 대부분의 줄에 한국어 번역이 들어 있으면 번역 서버에 보내지 않고 그대로 사용
+    if (koTr > 0 && koTr >= out.length * 0.6) { out.translationDone = true; out.embeddedTranslation = true; }
+    else out.forEach(l => { delete l.tr; });
+    return out;
 }
 
 // lrclib에 한국 사용자가 올린 가사 중 한 줄에 "원문 / 한글 발음 / 한국어 번역"을 이어 붙인 경우가 있음

@@ -560,9 +560,20 @@ app.get('/lyrics', async (req, res) => {
 
     // 같은 곡명의 다른 가수 곡(예: ライラック / 美波)을 피하기 위해, 제목에서 알아낸 원곡 가수와 일치하는 결과를 우선
     const knownArtists = [...original.artists, ...coverArtists, englishMeta?.artist || ''].map(normalize).filter(a => a.length >= 2);
+    // 가수 이름 비교: 완전히 같거나, 결과 가수 칸의 이름 하나(예: "Orangestar feat.IA"의 Orangestar)와 같으면 같은 가수.
+    //   한쪽이 다른 쪽에 포함되는 경우는 짧은 쪽이 4자 이상일 때만 인정
+    //   (예: "B.I"(bi)가 "Hebi"(hebi) 안에 들어 있어 Hebi의 Be I에 B.I의 BE I 가사가 붙던 문제)
+    const ARTIST_SPLIT = /\s*[\/&,、×]\s*|\s+(?:x|feat\.?|ft\.?|with|and)\s+|[()（）\[\]]/i;
     const artistMatches = (r) => {
         const a = normalize(r.artistName);
-        return !!a && knownArtists.some(k => a.includes(k) || k.includes(a));
+        if (!a) return false;
+        const parts = new Set([a, ...String(r.artistName).split(ARTIST_SPLIT).map(normalize).filter(Boolean)]);
+        return knownArtists.some(k => {
+            if (!k) return false;
+            if (parts.has(k)) return true;
+            const [shorter, longer] = k.length <= a.length ? [k, a] : [a, k];
+            return shorter.length >= 4 && longer.includes(shorter);
+        });
     };
 
     // 가수 미확인 결과 허용 조건: 곡명이 정확히 같고, 가수 이름이 우리가 아는 가수와 다른 문자로 표기된 경우만
