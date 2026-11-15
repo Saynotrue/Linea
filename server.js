@@ -442,12 +442,15 @@ const lyricsResultCache = new Map();
 
 app.get('/lyrics', async (req, res) => {
     const { title = '', artist, album, videoId } = req.query;
-    if (videoId && lyricsResultCache.has(videoId)) return res.json(lyricsResultCache.get(videoId));
+    // 저장 기준은 영상 + 제목: 곡이 넘어가는 순간 유튜브 뮤직이 새 곡의 videoId와 이전 곡의 제목을 같이 보내는 경우가 있어,
+    // videoId만으로 저장하면 이전 곡 가사가 새 곡에 저장돼 계속 나옴 (예: I Love Rock 'N Roll에 이전 곡 Overdose 가사)
+    const lyricsCacheKey = videoId ? `${videoId}|${title}` : '';
+    if (lyricsCacheKey && lyricsResultCache.has(lyricsCacheKey)) return res.json(lyricsResultCache.get(lyricsCacheKey));
     if (req.query.prefetch) console.log(`[가사 검색] ⏭️ 다음 곡 미리 찾기: ${title} (${videoId})`);
     // 가사를 찾은 응답만 보관 (못 찾은 경우는 다음에 다시 시도: 재생 중일 때는 유튜브 자막 단계가 추가로 있음)
     const sendJson = res.json.bind(res);
     res.json = (body) => {
-        if (videoId && body?.lyrics) cacheSet(lyricsResultCache, videoId, body);
+        if (lyricsCacheKey && body?.lyrics) cacheSet(lyricsResultCache, lyricsCacheKey, body);
         return sendJson(body);
     };
 
@@ -781,7 +784,7 @@ app.post('/translate', async (req, res) => {
     if (lines.length === 0) return res.json({ translations: [] });
     const cacheKey = lines.join('\n');
     // 문맥 번역이 이미 끝난 곡(다음 곡 미리 번역 등)은 그 결과를 바로 줌
-    if (aiTranslationCache.has(cacheKey)) return res.json({ ...aiTranslationCache.get(cacheKey), ai: true });
+    if (req.body.allowAi !== false && aiTranslationCache.has(cacheKey)) return res.json({ ...aiTranslationCache.get(cacheKey), ai: true });
     if (translationCache.has(cacheKey)) return res.json(translationCache.get(cacheKey));
     if (isKoreanLyrics(lines)) return res.json({ skip: true });
 

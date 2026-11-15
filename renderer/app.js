@@ -43,7 +43,8 @@ let appConfig = {
     widgetStyle: 'eq',
     trayIcon: 'player',
     showLyrics: false, // 전체화면 가사 창 (기본: 숨김 → 곡 정보가 가운데)
-    showTranslation: false // 전체화면 가사 번역 (원문 아래에 한국어 번역)
+    showTranslation: false, // 전체화면 가사 번역 (원문 아래에 한국어 번역)
+    aiTranslation: true // AI 문맥 번역 사용 (끄면 NVIDIA 키가 있어도 구글 번역만)
 };
 
 function initSettings() {
@@ -170,11 +171,13 @@ const AmbientPaint = (() => {
     }
 
     // 그릴 대상: 전체화면 배경, LP 위젯 배경 (무늬는 한 번만 계산해 보이는 쪽에만 그림)
+    //   blur: 작은 캔버스 안에서 주는 흐림 (전체화면은 CSS로 화면 크기에 흐림을 주면 GPU 부담이 커서 여기서 줌.
+    //         캔버스 1칸이 화면에서 약 26px이라 1.5칸 ≈ 예전 CSS blur(40px)). LP는 작아서 CSS 흐림 그대로
     const TARGETS = [
-        { id: 'ambient-canvas', visible: () => document.body.classList.contains('fullscreen-mode') },
+        { id: 'ambient-canvas', blur: 'blur(1.5px) saturate(1.1)', visible: () => document.body.classList.contains('fullscreen-mode') },
         { id: 'lp-ambient-canvas', visible: () => !document.body.classList.contains('fullscreen-mode') && !!document.getElementById('lp-mode')?.classList.contains('mode-active') },
     ];
-    let targets = [], image = null;
+    let targets = [], image = null, source = null, sourceCtx = null;
     let current = Array.from({ length: COLOR_COUNT }, () => [26, 26, 26]);
     let from = current.map(c => [...c]), target = current.map(c => [...c]);
     let fadeStart = 0;
@@ -188,6 +191,10 @@ const AmbientPaint = (() => {
         if (!targets.length) return false;
         targets.forEach(tg => { tg.canvas.width = W; tg.canvas.height = H; tg.ctx = tg.canvas.getContext('2d'); });
         image = targets[0].ctx.createImageData(W, H);
+        // 계산한 무늬를 한 번 받아 두는 작은 캔버스 (흐림을 줄 대상은 여기서 필터를 걸어 옮겨 그림)
+        source = document.createElement('canvas');
+        source.width = W; source.height = H;
+        sourceCtx = source.getContext('2d');
         return true;
     }
 
@@ -214,7 +221,14 @@ const AmbientPaint = (() => {
                 data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
             }
         }
-        targets.forEach(tg => { if (tg.visible()) tg.ctx.putImageData(image, 0, 0); });
+        sourceCtx.putImageData(image, 0, 0);
+        targets.forEach(tg => {
+            if (!tg.visible()) return;
+            if (!tg.blur) { tg.ctx.putImageData(image, 0, 0); return; }
+            tg.ctx.clearRect(0, 0, W, H); // 흐림으로 반투명해지는 가장자리에 이전 프레임이 겹치지 않게 (화면 밖으로 나가는 부분)
+            tg.ctx.filter = tg.blur;
+            tg.ctx.drawImage(source, 0, 0);
+        });
     }
 
     function updateColors(now) {
@@ -456,6 +470,18 @@ function setLyricText(el, label) {
     el.replaceChildren(document.createTextNode(text), trEl);
 }
 
+// 전체화면 곡 제목은 아무리 길어도 한 줄: 곡 정보 폭을 넘으면 그만큼 글자 크기를 줄임
+function fitTitle() {
+    const el = document.getElementById('title');
+    if (!el) return;
+    el.style.removeProperty('font-size');
+    if (!document.body.classList.contains('fullscreen-mode') || !el.clientWidth) return;
+    const overflow = el.scrollWidth / el.clientWidth;
+    if (overflow <= 1.001) return;
+    const base = parseFloat(getComputedStyle(el).fontSize);
+    el.style.setProperty('font-size', `${Math.floor(base / overflow * 10) / 10}px`, 'important');
+}
+
 function getLyricContext(progress) {
     if (currentLyrics.length > 0 && progress < currentLyrics[0].time) {
         return {
@@ -616,6 +642,7 @@ function animateLyricScroll(els, texts) {
 
 // 창 크기가 바뀌면 줄 위치가 달라지므로 흐림 경계 다시 계산
 window.addEventListener('resize', () => {
+    fitTitle(); // 곡 정보 폭이 바뀌면 제목 한 줄 맞춤도 다시 (전체화면이 아니면 원래 크기로)
     if (!document.body.classList.contains('fullscreen-mode')) return;
     const ids = ['prev2-lyric', 'prev-lyric', 'current-lyric', 'next-lyric', 'next2-lyric'];
     const els = ids.map(id => document.getElementById(id));
@@ -803,7 +830,8 @@ let translationRequestFor = null; // 지금 번역을 요청 중인 가사 (곡�
 
 const fetchTranslation = (lines, title, artist, prefetch = false) => fetch('http://127.0.0.1:8888/translate', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lines, title, artist, prefetch }),
+    // allowAi: false면 서버에 저장된 AI 번역 대신 구글 번역을 줌
+    body: JSON.stringify({ lines, title, artist, prefetch, allowAi: appConfig.aiTranslation }),
 }).then(r => r.json());
 
 async function requestTranslation() {
@@ -820,7 +848,7 @@ async function requestTranslation() {
             res.translations.forEach((tr, i) => { if (lyrics[i] && tr) lyrics[i].tr = tr; });
             lastLyricIdx = -1; // 번역이 붙은 줄로 바로 다시 그림
             if (res.ai) { lyrics.aiTranslated = true; updateTranslateBadge(); }
-            else refineTranslation(lyrics); // 구글 번역을 먼저 보여 주고, 문맥 번역이 오면 바꿔 끼움
+            else if (appConfig.aiTranslation) refineTranslation(lyrics); // 구글 번역을 먼저 보여 주고, 문맥 번역이 오면 바꿔 끼움
         } else if (res.skip) {
             lyrics.translationDone = true;
             showToast('한국어 가사라 번역하지 않아요', 1800);
@@ -850,9 +878,10 @@ function updateTranslateBadge() {
 }
 
 async function refineTranslation(lyrics) {
+    if (!appConfig.aiTranslation) return;
     try {
         const res = await fetchAiTranslation(lyrics.map(l => l.text), lastTitle, lastArtist);
-        if (currentLyrics !== lyrics || !res.translations) return;
+        if (currentLyrics !== lyrics || !res.translations || !appConfig.aiTranslation) return; // 그사이 AI 번역을 끈 경우도 버림
         res.translations.forEach((tr, i) => { if (lyrics[i]) lyrics[i].tr = tr || lyrics[i].tr; });
         lyrics.aiTranslated = true;
         updateTranslateBadge();
@@ -899,7 +928,7 @@ async function prefetchNextTrack(next) {
         const lines = parsed.map(l => l.text);
         if (!lines.length) return;
         await fetchTranslation(lines, next.title, next.artist, true);
-        await fetchAiTranslation(lines, next.title, next.artist, 'next');
+        if (appConfig.aiTranslation) await fetchAiTranslation(lines, next.title, next.artist, 'next');
     } catch (e) { /* 미리 준비 실패는 무시 (곡이 시작되면 평소처럼 찾음) */ }
 }
 
@@ -1048,6 +1077,7 @@ function toggleFullscreen() {
     wakeFromIdle(); // 전체화면이면 숨김 타이머 시작, 아니면 숨김 해제
     if (!isFullscreen) setVolumePopover(false);
     lastLyricIdx = -1;
+    fitTitle(); // 전체화면이면 제목을 한 줄에 맞추고, 아니면 원래 크기로 (창 크기가 바뀐 뒤에는 resize에서 한 번 더)
 }
 
 // 스페이스: 재생/일시정지, ← / →: 5초 이동 (소리를 부드럽게 줄였다가 동작하는 처리는 Tampermonkey 쪽에서)
@@ -1219,6 +1249,7 @@ async function syncWithServer() {
                 await new Promise(r => setTimeout(r, 400));
 
                 document.getElementById('title').textContent = displayTitle(track.title);
+                fitTitle();
                 document.getElementById('artist').textContent = track.artist || 'Unknown Artist';
                 const lpTitle = document.getElementById('lp-widget-title');
                 const lpArtist = document.getElementById('lp-widget-artist');
@@ -1666,6 +1697,9 @@ function stopEQ() {
 //  8. ⚙️ UI 업데이트 및 설정 모달 이벤트 바인딩
 // ═════════════════════════════════════════════════════════════
 function applyConfigToUI() {
+    const aiTranslationToggle = document.getElementById('ai-translation-toggle');
+    if (aiTranslationToggle) aiTranslationToggle.checked = appConfig.aiTranslation !== false;
+
     const autoFadeToggle = document.getElementById('auto-fade-toggle');
     if (autoFadeToggle) autoFadeToggle.checked = appConfig.autoFade;
     if (appConfig.autoFade) enableAutoFade(); else disableAutoFade();
@@ -1757,7 +1791,7 @@ async function saveNvidiaKey(value) {
     if (input) input.value = ''; // 입력한 키는 화면에 남기지 않음
     showToast(value ? 'NVIDIA API 키를 저장했어요' : 'NVIDIA API 키를 삭제했어요', 1800);
     // 번역을 켜 둔 곡이면 새 키로 바로 문맥 번역 시도
-    if (value && appConfig.showTranslation && currentLyrics.translationDone && !currentLyrics.aiTranslated && !currentLyrics.embeddedTranslation) {
+    if (value && appConfig.aiTranslation && appConfig.showTranslation && currentLyrics.translationDone && !currentLyrics.aiTranslated && !currentLyrics.embeddedTranslation) {
         refineTranslation(currentLyrics);
     }
 }
@@ -1776,6 +1810,25 @@ document.getElementById('opacity-slider')?.addEventListener('input', (e) => {
     applyConfigToApp();
 });
 document.getElementById('opacity-slider')?.addEventListener('change', saveSettings);
+
+// AI 문맥 번역 켜고 끄기: 지금 곡 번역도 바로 바꿈
+document.getElementById('ai-translation-toggle')?.addEventListener('change', (e) => {
+    appConfig.aiTranslation = e.target.checked;
+    saveSettings();
+    const lyrics = currentLyrics;
+    if (!appConfig.showTranslation || !lyrics.length || lyrics.embeddedTranslation) return;
+    if (appConfig.aiTranslation) {
+        if (lyrics.translationDone && !lyrics.aiTranslated) refineTranslation(lyrics);
+    } else if (lyrics.aiTranslated) {
+        // AI 번역을 지우고 구글 번역으로 다시 받음 (서버에 저장돼 있어 바로 옴)
+        lyrics.forEach(l => { delete l.tr; });
+        lyrics.aiTranslated = false;
+        lyrics.translationDone = false;
+        updateTranslateBadge();
+        lastLyricIdx = -1;
+        requestTranslation();
+    }
+});
 
 document.getElementById('auto-fade-toggle')?.addEventListener('change', (e) => {
     appConfig.autoFade = e.target.checked;
