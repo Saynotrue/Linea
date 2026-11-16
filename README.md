@@ -33,7 +33,7 @@
 
 > C(Linea Player)를 고르셨다면 [C. Linea Player](#c-linea-player-앱-하나로)로 건너뛰세요.
 
-[Releases](https://github.com/Saynotrue/youtube-music-third-party/releases) 페이지에서 운영체제에 맞는 파일을 받습니다.
+[Releases](https://github.com/Saynotrue/Linea/releases) 페이지에서 운영체제에 맞는 파일을 받습니다.
 
 | 운영체제 | 파일 |
 |---|---|
@@ -72,7 +72,7 @@
 
 Chrome, Edge, Whale 등 크롬 계열 브라우저(Chrome 111 이상)에서 동작합니다. 아직 크롬 웹 스토어에는 등록 전이라, 파일을 받아 직접 불러옵니다.
 
-1. [Releases](https://github.com/Saynotrue/youtube-music-third-party/releases)에서 `Linea-Connector-<버전>.zip`을 받아 **압축을 풉니다.** 풀린 폴더는 지우지 말고 그대로 둡니다.
+1. [Releases](https://github.com/Saynotrue/Linea/releases)에서 `Linea-Connector-<버전>.zip`을 받아 **압축을 풉니다.** 풀린 폴더는 지우지 말고 그대로 둡니다.
 2. 브라우저에서 확장 프로그램 관리 화면을 엽니다: `chrome://extensions` (Edge: `edge://extensions`, Whale: `whale://extensions`)
 3. 오른쪽 위 **개발자 모드**를 켭니다.
 4. **압축해제된 확장 프로그램을 로드합니다**를 누르고, 1에서 풀어 둔 폴더(`manifest.json`이 들어 있는 폴더)를 고릅니다.
@@ -102,7 +102,7 @@ Chrome, Edge, Whale 등 크롬 계열 브라우저(Chrome 111 이상)에서 동�
 
 유튜브 뮤직이 앱 안의 창에서 열리는 버전입니다. 브라우저, 확장 프로그램, Tampermonkey가 필요 없습니다.
 
-1. [Releases](https://github.com/Saynotrue/youtube-music-third-party/releases)에서 운영체제에 맞는 파일을 받아 설치합니다. 설치 방법과 첫 실행 경고 대처법은 위 [1. 위젯 앱 설치](#1-위젯-앱-설치-a-b)와 같습니다. (macOS "손상" 경고 시: `xattr -cr "/Applications/Linea Player.app"`)
+1. [Releases](https://github.com/Saynotrue/Linea/releases)에서 운영체제에 맞는 파일을 받아 설치합니다. 설치 방법과 첫 실행 경고 대처법은 위 [1. 위젯 앱 설치](#1-위젯-앱-설치-a-b)와 같습니다. (macOS "손상" 경고 시: `xattr -cr "/Applications/Linea Player.app"`)
 
    | 운영체제 | 파일 |
    |---|---|
