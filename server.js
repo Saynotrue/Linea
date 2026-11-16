@@ -8,7 +8,9 @@ const WS_PORT = 8889;
 
 let playerState = { playing: false };
 const commandClients = new Set();
-let rendererSocket = null;
+// 이퀄라이저 데이터를 받을 위젯들 (여러 개가 연결돼도 모두에게 보냄. 하나만 기억하면 나중에 연결한 쪽이 자리를 가져가
+//   먼저 연결된 위젯은 다시 연결할 때까지 이퀄라이저가 멈춤)
+const rendererSockets = new Set();
 
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
@@ -912,19 +914,35 @@ const isKoreanLyrics = (lines) => {
     return withLetters.length > 0 && withLetters.filter(l => /[가-힣]/.test(l)).length / withLetters.length >= 0.3;
 };
 
+async function googleTranslateChunk(lines) {
+    const body = new URLSearchParams();
+    lines.forEach(line => body.append('q', line));
+    const { data } = await axios.post(GOOGLE_TRANSLATE_URL, body.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        timeout: 10000,
+    });
+    // 한 줄만 보내면 [번역, 언어] 하나만 올 수 있어 배열로 맞춤
+    const items = typeof data?.[0] === 'string' ? [data] : data;
+    return lines.map((_, i) => {
+        const item = items?.[i];
+        return Array.isArray(item) ? { tr: item[0] || '', lang: item[1] || '' } : { tr: String(item || ''), lang: '' };
+    });
+}
+
+// 구글이 가끔 오류 대신 빈 번역("")을 돌려줌 (같은 요청도 어떤 때는 번역이 오고 어떤 때는 첫 줄만 오는 등)
+//   → 빈 줄만 모아 잠시 뒤 다시 요청 (최대 2번). 그래도 빈 줄은 missing으로 알려 결과를 저장하지 않게 함
+const GOOGLE_RETRY_DELAYS_MS = [400, 1200];
 async function googleTranslateLines(lines) {
     const out = [];
-    for (let i = 0; i < lines.length; i += TRANSLATE_CHUNK_LINES) {
-        const body = new URLSearchParams();
-        lines.slice(i, i + TRANSLATE_CHUNK_LINES).forEach(line => body.append('q', line));
-        const { data } = await axios.post(GOOGLE_TRANSLATE_URL, body.toString(), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-            timeout: 10000,
-        });
-        // 한 줄만 보내면 [번역, 언어] 하나만 올 수 있어 배열로 맞춤
-        const items = typeof data?.[0] === 'string' ? [data] : data;
-        items.forEach(item => out.push(Array.isArray(item) ? { tr: item[0] || '', lang: item[1] || '' } : { tr: String(item || ''), lang: '' }));
+    for (let i = 0; i < lines.length; i += TRANSLATE_CHUNK_LINES) out.push(...await googleTranslateChunk(lines.slice(i, i + TRANSLATE_CHUNK_LINES)));
+    for (const delay of GOOGLE_RETRY_DELAYS_MS) {
+        const empty = out.map((r, i) => (r.tr.trim() ? -1 : i)).filter(i => i >= 0);
+        if (empty.length === 0) break;
+        await new Promise(r => setTimeout(r, delay));
+        const again = await googleTranslateChunk(empty.map(i => lines[i])).catch(() => null);
+        again?.forEach((r, k) => { if (r.tr.trim()) out[empty[k]] = r; });
     }
+    out.missing = out.filter(r => !r.tr.trim()).length;
     return out;
 }
 
@@ -948,9 +966,14 @@ app.post('/translate', async (req, res) => {
             // 한국어 줄이거나 번역해도 그대로인 줄(고유명사 등)은 번역 줄을 붙이지 않음
             return r && r.lang !== 'ko' && r.tr.trim() && r.tr.trim() !== line.trim() ? r.tr.trim() : '';
         });
+        // 다시 요청해도 절반 넘게 비면 실패로 알림 (위젯이 "잠시 후 다시" 안내). 일부만 비면 있는 만큼 보여 주되 저장하지 않음 (다음에 다시 받게)
+        if (results.missing > unique.length / 2) {
+            console.log(`[가사 번역] 실패: 구글이 빈 번역을 돌려줌 (${results.missing}/${unique.length}줄)`);
+            return res.json({ error: 'failed' });
+        }
         const body = { translations };
-        cacheSet(translationCache, cacheKey, body);
-        console.log(`[가사 번역] ✅ ${req.body.prefetch ? '⏭️ 다음 곡 ' : ''}${req.body.title || ''} ${unique.length}줄 ${Date.now() - t0}ms`);
+        if (results.missing === 0) cacheSet(translationCache, cacheKey, body);
+        console.log(`[가사 번역] ✅ ${req.body.prefetch ? '⏭️ 다음 곡 ' : ''}${req.body.title || ''} ${unique.length}줄 ${Date.now() - t0}ms${results.missing ? ` (빈 번역 ${results.missing}줄)` : ''}`);
         res.json(body);
     } catch (e) {
         console.log(`[가사 번역] 실패: ${e.response?.status || e.message}`);
@@ -1256,13 +1279,14 @@ wss.on('connection', (ws) => {
         try {
             const data = JSON.parse(message);
             if (data.type === 'register_renderer') {
-                rendererSocket = ws;
-            } else if (data.type === 'eq_data' && rendererSocket && rendererSocket.readyState === WebSocket.OPEN) {
-                rendererSocket.send(JSON.stringify(data));
+                rendererSockets.add(ws);
+            } else if (data.type === 'eq_data') {
+                const text = JSON.stringify(data);
+                for (const socket of rendererSockets) if (socket.readyState === WebSocket.OPEN) socket.send(text);
             }
         } catch (e) { }
     });
-    ws.on('close', () => { if (rendererSocket === ws) rendererSocket = null; });
+    ws.on('close', () => rendererSockets.delete(ws));
 });
 
 app.listen(PORT, '127.0.0.1', () => {
