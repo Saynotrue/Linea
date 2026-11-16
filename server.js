@@ -914,7 +914,29 @@ const isKoreanLyrics = (lines) => {
     return withLetters.length > 0 && withLetters.filter(l => /[가-힣]/.test(l)).length / withLetters.length >= 0.3;
 };
 
-async function googleTranslateChunk(lines) {
+// 1순위: 구글 번역 gtx 주소. 여러 줄을 줄바꿈으로 이어 한 번에 보내고, 돌아온 번역을 다시 줄바꿈으로 나눔
+//   (2026-11 기준 아래 clients5 주소가 대부분의 줄에 빈 번역("")을 돌려주게 됨)
+const GOOGLE_GTX_URL = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ko&dt=t';
+const GTX_CHUNK_CHARS = 1800; // 한 요청에 보내는 글자 수 (너무 길면 거절될 수 있어 나눔)
+const HANGUL_ONLY = (line) => /[가-힣]/.test(line) && !/[ぁ-ゟァ-ヿ一-龥]/.test(line);
+
+async function gtxTranslateChunk(lines) {
+    const body = new URLSearchParams({ q: lines.join('\n') });
+    const { data } = await axios.post(GOOGLE_GTX_URL, body.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        timeout: 10000,
+    });
+    // data[0] = [[번역, 원문, ...], ...] (문장 단위로 나뉘어 오므로 이어 붙인 뒤 줄바꿈으로 다시 나눔), data[2] = 감지한 언어
+    const text = (Array.isArray(data?.[0]) ? data[0] : []).map(seg => (Array.isArray(seg) && typeof seg[0] === 'string' ? seg[0] : '')).join('');
+    const parts = text.split('\n');
+    if (parts.length !== lines.length) throw new Error(`gtx line mismatch ${parts.length}/${lines.length}`);
+    const lang = typeof data?.[2] === 'string' ? data[2] : '';
+    // 한 덩어리의 언어만 알려 주므로, 한글만 있는 줄은 한국어 줄로 봄 (번역 줄을 붙이지 않게)
+    return parts.map((tr, i) => ({ tr: tr.trim(), lang: HANGUL_ONLY(lines[i]) ? 'ko' : lang }));
+}
+
+// 2순위: 예전 주소 (q를 줄마다 따로 보냄)
+async function clients5TranslateChunk(lines) {
     const body = new URLSearchParams();
     lines.forEach(line => body.append('q', line));
     const { data } = await axios.post(GOOGLE_TRANSLATE_URL, body.toString(), {
@@ -929,18 +951,40 @@ async function googleTranslateChunk(lines) {
     });
 }
 
-// 구글이 가끔 오류 대신 빈 번역("")을 돌려줌 (같은 요청도 어떤 때는 번역이 오고 어떤 때는 첫 줄만 오는 등)
-//   → 빈 줄만 모아 잠시 뒤 다시 요청 (최대 2번). 그래도 빈 줄은 missing으로 알려 결과를 저장하지 않게 함
+const googleTranslateChunk = (lines) => gtxTranslateChunk(lines).catch(e => {
+    console.log(`[가사 번역] gtx 실패 → 예전 주소로: ${e.response?.status || e.message}`);
+    return clients5TranslateChunk(lines);
+});
+
+// 줄을 글자 수 기준으로 나눔 (줄바꿈으로 이어 보내므로)
+function chunkLines(items, lengthOf = (line) => line.length) {
+    const chunks = [];
+    let cur = [], size = 0;
+    for (const line of items) {
+        if (cur.length && (size + lengthOf(line) + 1 > GTX_CHUNK_CHARS || cur.length >= TRANSLATE_CHUNK_LINES)) { chunks.push(cur); cur = []; size = 0; }
+        cur.push(line);
+        size += lengthOf(line) + 1;
+    }
+    if (cur.length) chunks.push(cur);
+    return chunks;
+}
+
+// 구글이 가끔 오류 대신 빈 번역("")을 돌려줌 → 빈 줄만 모아 잠시 뒤 다시 요청 (최대 2번).
+//   그래도 빈 줄은 missing으로 알려 결과를 저장하지 않게 함
 const GOOGLE_RETRY_DELAYS_MS = [400, 1200];
 async function googleTranslateLines(lines) {
+    // 줄바꿈으로 이어 보내므로 줄 안의 줄바꿈은 공백으로
+    lines = lines.map(l => l.replace(/\s*\n\s*/g, ' '));
     const out = [];
-    for (let i = 0; i < lines.length; i += TRANSLATE_CHUNK_LINES) out.push(...await googleTranslateChunk(lines.slice(i, i + TRANSLATE_CHUNK_LINES)));
+    for (const chunk of chunkLines(lines)) out.push(...await googleTranslateChunk(chunk));
     for (const delay of GOOGLE_RETRY_DELAYS_MS) {
         const empty = out.map((r, i) => (r.tr.trim() ? -1 : i)).filter(i => i >= 0);
         if (empty.length === 0) break;
         await new Promise(r => setTimeout(r, delay));
-        const again = await googleTranslateChunk(empty.map(i => lines[i])).catch(() => null);
-        again?.forEach((r, k) => { if (r.tr.trim()) out[empty[k]] = r; });
+        for (const chunk of chunkLines(empty, (i) => lines[i].length)) {
+            const again = await googleTranslateChunk(chunk.map(i => lines[i])).catch(() => null);
+            again?.forEach((r, k) => { if (r.tr.trim()) out[chunk[k]] = r; });
+        }
     }
     out.missing = out.filter(r => !r.tr.trim()).length;
     return out;
