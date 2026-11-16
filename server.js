@@ -77,20 +77,48 @@ const ART_VIDEO_PAGE = `<!DOCTYPE html>
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}#p{position:absolute;inset:0;width:100%;height:100%}</style>
 </head><body><div id="p"></div>
 <script>
-let player = null, ready = false, want = null, loadedId = null, lastSeekAt = 0;
+let player = null, ready = false, want = null, wantAt = 0, loadedId = null, lastSeekAt = 0, aligned = false;
 const tell = (msg) => parent.postMessage({ artVideo: msg.state, ...msg }, '*');
 // 자막은 항상 끔 (올린 사람이 기본으로 켜 둔 자막도. 영상이 바뀌거나 다시 재생될 때 다시 켜지므로 재생될 때마다)
 function hideCaptions() {
     for (const name of ['captions', 'cc']) { try { player.unloadModule(name); } catch (e) { } }
     try { player.setOption('captions', 'track', {}); } catch (e) { }
 }
+// 받은 시점 이후 흐른 시간까지 더한 지금의 목표 위치
+function wantTime() {
+    return want.time + (want.playing ? (performance.now() - wantAt) / 1000 : 0);
+}
+// 처음 불러온 영상이 목표 위치 근처에서 재생 중인지 (유튜브가 시작 위치를 무시하고 0초부터 틀 때가 있어,
+// 맞춰지기 전에는 'playing'을 알리지 않음 → 위젯이 영상 첫 장면을 잠깐 보여 주지 않음)
+function checkAligned() {
+    if (aligned || !ready || !want) return;
+    // 재생 중이거나, 멈춘 곡이면 멈춘 상태(2)·준비된 상태(5)에서 판단
+    const state = player.getPlayerState();
+    if (!(state === 1 || (!want.playing && (state === 2 || state === 5)))) return;
+    const duration = player.getDuration() || 0;
+    const target = duration ? Math.min(wantTime(), duration - 0.2) : wantTime();
+    if (Math.abs(player.getCurrentTime() - target) <= 1) {
+        aligned = true;
+        tell({ state: 'playing', videoId: loadedId });
+    } else if (Date.now() - lastSeekAt > 800) {
+        lastSeekAt = Date.now();
+        player.seekTo(duration ? Math.min(target + 0.3, duration - 0.2) : target + 0.3, true);
+    }
+}
 function apply() {
     if (!ready || !want) return;
     if (want.videoId !== loadedId) {
         loadedId = want.videoId;
-        player.loadVideoById({ videoId: want.videoId, startSeconds: want.time });
+        aligned = false;
+        lastSeekAt = Date.now();
+        player.loadVideoById({ videoId: want.videoId, startSeconds: wantTime() + 0.3 });
         if (!want.playing) setTimeout(() => player.pauseVideo(), 300);
         return;
+    }
+    if (!aligned) {
+        const st = player.getPlayerState();
+        if (want.playing && st !== 1 && st !== 3) player.playVideo();
+        return checkAligned();
     }
     const state = player.getPlayerState();
     // 영상이 끝났거나(0) 짝 영상이 곡보다 짧으면 그대로 둠
@@ -108,10 +136,12 @@ window.addEventListener('message', (e) => {
     if (e.data?.artVideoSize) return tell({ state: 'size', videoId: loadedId, ...e.data.artVideoSize });
     if (e.data?.type !== 'sync') return;
     want = e.data;
+    wantAt = performance.now();
     apply();
 });
 setInterval(() => {
-    if (ready && loadedId) tell({ state: 'time', videoId: loadedId, time: player.getCurrentTime(), playing: player.getPlayerState() === 1 });
+    checkAligned();
+    if (ready && loadedId && aligned) tell({ state: 'time', videoId: loadedId, time: player.getCurrentTime(), playing: player.getPlayerState() === 1 });
 }, 250);
 window.onYouTubeIframeAPIReady = () => {
     player = new YT.Player('p', {
@@ -119,7 +149,12 @@ window.onYouTubeIframeAPIReady = () => {
         playerVars: { autoplay: 1, mute: 1, controls: 0, cc_load_policy: 0, disablekb: 1, fs: 0, rel: 0, iv_load_policy: 3, playsinline: 1, modestbranding: 1, origin: location.origin },
         events: {
             onReady: () => { ready = true; player.mute(); apply(); },
-            onStateChange: (e) => { if (e.data === 1) { hideCaptions(); tell({ state: 'playing', videoId: loadedId }); } },
+            onStateChange: (e) => {
+                if (e.data !== 1) return;
+                hideCaptions();
+                if (aligned) tell({ state: 'playing', videoId: loadedId });
+                else checkAligned();
+            },
             // 101·150: 퍼가기 금지 영상, 100: 없는 영상, 153: 재생 주소 문제
             onError: (e) => tell({ state: 'error', code: e.data, videoId: loadedId }),
         },
