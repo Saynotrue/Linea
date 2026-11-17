@@ -245,6 +245,51 @@ function lyricsLangIs(text, lang) {
 
 const normalize = (s) => (s || '').toLowerCase().replace(/[\s'"`‘’“”「」『』【】\[\]()（）|·・\-_:~!?.,、。！？〜～…★☆♪♡]/g, '');
 
+// ─── 가나 곡명 ↔ 영문 곡명이 같은 말인지 (예: ライラック ↔ Lilac, アイドル ↔ Idol) ─────────
+// 가나를 로마자로 바꾼 뒤 둘 다 자음 뼈대만 남겨 비교 (일본어 외래어는 모음이 붙고 l/r 구분이 없으므로)
+//   예: ダンスホール(dnshl) ↔ A Posteriori(pstr)는 다름 → 같은 가수·비슷한 길이의 다른 곡을 막음
+const KANA_ROMAJI = (() => {
+    const base = {
+        ア: 'a', イ: 'i', ウ: 'u', エ: 'e', オ: 'o', カ: 'ka', キ: 'ki', ク: 'ku', ケ: 'ke', コ: 'ko', ガ: 'ga', ギ: 'gi', グ: 'gu', ゲ: 'ge', ゴ: 'go',
+        サ: 'sa', シ: 'shi', ス: 'su', セ: 'se', ソ: 'so', ザ: 'za', ジ: 'ji', ズ: 'zu', ゼ: 'ze', ゾ: 'zo', タ: 'ta', チ: 'chi', ツ: 'tsu', テ: 'te', ト: 'to',
+        ダ: 'da', ヂ: 'ji', ヅ: 'zu', デ: 'de', ド: 'do', ナ: 'na', ニ: 'ni', ヌ: 'nu', ネ: 'ne', ノ: 'no', ハ: 'ha', ヒ: 'hi', フ: 'fu', ヘ: 'he', ホ: 'ho',
+        バ: 'ba', ビ: 'bi', ブ: 'bu', ベ: 'be', ボ: 'bo', パ: 'pa', ピ: 'pi', プ: 'pu', ペ: 'pe', ポ: 'po', マ: 'ma', ミ: 'mi', ム: 'mu', メ: 'me', モ: 'mo',
+        ヤ: 'ya', ユ: 'yu', ヨ: 'yo', ラ: 'ra', リ: 'ri', ル: 'ru', レ: 're', ロ: 'ro', ワ: 'wa', ヲ: 'o', ン: 'n', ヴ: 'vu',
+        ァ: 'a', ィ: 'i', ゥ: 'u', ェ: 'e', ォ: 'o', ャ: 'ya', ュ: 'yu', ョ: 'yo',
+    };
+    return base;
+})();
+const KANA_ONLY = /^[ぁ-ゟァ-ヿー・\s!?！？.,、。&＆-]+$/;
+function kanaToRomaji(text) {
+    const kata = text.replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
+    return [...kata].map(c => KANA_ROMAJI[c] ?? (/[a-z]/i.test(c) ? c : '')).join('');
+}
+function consonantSkeleton(latin) {
+    return latin.toLowerCase()
+        .replace(/ph/g, 'f').replace(/th/g, 's').replace(/ck/g, 'k').replace(/c(?=[eiy])/g, 's')
+        .replace(/[cq]/g, 'k').replace(/x/g, 'ks').replace(/v/g, 'b').replace(/l/g, 'r').replace(/[zj]/g, 's')
+        .replace(/(sh|ch|ts)/g, 's')
+        .replace(/[^a-z]/g, '').replace(/[aeiouy]/g, '').replace(/(.)\1+/g, '$1');
+}
+function editDistance(a, b) {
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+        d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[a.length][b.length];
+}
+// kanaTitle이 가나로만 된 곡명이면 latinTitles 중 하나와 발음이 비슷해야 같은 곡. 가나만이 아니면(한자·한글 등) 판단하지 않음(true)
+function kanaTitleSoundsLike(kanaTitle, latinTitles) {
+    if (!KANA_ONLY.test(kanaTitle)) return true;
+    const k = consonantSkeleton(kanaToRomaji(kanaTitle));
+    return latinTitles.some(t => {
+        if (!/[a-zA-Z]/.test(t)) return false;
+        const l = consonantSkeleton(t);
+        if (!k || !l) return false;
+        return 1 - editDistance(k, l) / Math.max(k.length, l.length) >= 0.6;
+    });
+}
+
 // 같은 곡의 뮤직비디오 찾기 (유튜브 검색 결과 중 곡명이 들어간 영상, 아티스트 공식 채널 우선)
 const MV_EXCLUDE_KEYWORDS = /노래방|karaoke|커버|cover|inst\b|instrumental|reaction|리액션|piano|guitar|bass|drum|vietsub|싱크룸|직캠|fancam|teaser|티저|1시간|1hour|playlist|shorts/i;
 async function findMusicVideoIds(title, artist, excludeId) {
@@ -832,7 +877,9 @@ app.get('/lyrics', async (req, res) => {
             const sameLength = playingSec && r.duration && Math.abs(r.duration - playingSec) <= 3;
             // 한자만으로 된 제목은 중국어 제목일 수 있어 제외 (예: To. X ↔ 噩梦 같은 가수의 다른 곡)
             const otherScript = /[ぁ-ゟァ-ヿ가-힣a-zA-Z]/.test(r.trackName) && ![...scriptsOf(r.trackName)].some(sc => queryTitleScripts.has(sc));
-            if (artistMatches(r) && (titleOk || (sameLength && otherScript))) return true;
+            // 가나 곡명이면 영문 곡명과 발음까지 비슷해야 함 (예: A Posteriori에 같은 가수·비슷한 길이의 ダンスホール 가사가 붙던 문제)
+            const soundsSame = kanaTitleSoundsLike(r.trackName, [cleanTitle, ...original.titles, englishTitle || '']);
+            if (artistMatches(r) && (titleOk || (sameLength && otherScript && soundsSame))) return true;
             // 가수를 확인하지 못한 결과는 곡 길이로라도 확인돼야 함 (QQ Music 등은 길이 정보가 없어
             // 길이 검사가 그냥 통과됨 → 같은 제목의 다른 사람 커버가 붙음. 예: Alice in 冷凍庫 / めありー)
             if (!r.duration || !isSafeFallback(r)) return false;
