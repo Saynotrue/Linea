@@ -157,7 +157,7 @@ const AmbientPaint = (() => {
     const perm = new Uint8Array(512);
     const vals = new Float32Array(256);
     for (let i = 0; i < 256; i++) { perm[i] = i; vals[i] = Math.random(); }
-    for (let i = 255; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [perm[i], perm[j]] = [perm[j], perm[i]]; }
+    for (let i = 255; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1));[perm[i], perm[j]] = [perm[j], perm[i]]; }
     for (let i = 0; i < 256; i++) perm[i + 256] = perm[i];
     const fade = t => t * t * (3 - 2 * t);
     const lerp = (a, b, t) => a + (b - a) * t;
@@ -768,6 +768,7 @@ function updateLyrics(prev, current, next, prev2 = '', next2 = '') {
         });
         if (lpCurrentEl) lpCurrentEl.textContent = plainLyric(current);
 
+        fitBarLyric(currentEl, container);
         if (container && currentEl && prevEl && nextEl) {
             const containerCenter = container.offsetWidth / 2;
             const currentHalf = currentEl.offsetWidth / 2;
@@ -781,6 +782,47 @@ function updateLyrics(prev, current, next, prev2 = '', next2 = '') {
 
         if (lpCurrentEl) lpCurrentEl.style.opacity = '1';
     }, 250);
+}
+
+// 바 모드의 긴 가사: 가사 칸보다 조금 넘치면 글자를 살짝 줄여 한 줄에 맞추고(최대 BAR_LYRIC_SHRINK_MIN까지),
+//   그래도 넘치면 앞부분부터 보여 준 뒤 그 줄이 불리는 동안 천천히 왼쪽으로 흘려 끝부분까지 보여 줌
+//   (가운데 정렬이라 그냥 두면 앞뒤가 같이 잘림. 가사 칸 양 끝 10%는 흐려지므로 가운데 80%를 보이는 폭으로 봄)
+const BAR_LYRIC_SHRINK_MIN = 0.85;
+const BAR_LYRIC_VISIBLE = 0.8;
+function stopBarMarquee(el) {
+    if (!el) return;
+    el.__marquee?.cancel();
+    el.__marquee = null;
+}
+function fitBarLyric(el, container) {
+    if (!el || !container) return;
+    stopBarMarquee(el);
+    el.style.removeProperty('font-size');
+    if (document.body.classList.contains('fullscreen-mode') || !container.clientWidth) return;
+    const avail = container.clientWidth * BAR_LYRIC_VISIBLE;
+    let width = el.scrollWidth;
+    if (width <= avail) return;
+    const base = parseFloat(getComputedStyle(el).fontSize);
+    const ratio = avail / width;
+    if (ratio >= BAR_LYRIC_SHRINK_MIN) {
+        el.style.setProperty('font-size', `${Math.floor(base * ratio * 0.98 * 10) / 10}px`, 'important');
+        return;
+    }
+    el.style.setProperty('font-size', `${Math.floor(base * BAR_LYRIC_SHRINK_MIN * 10) / 10}px`, 'important');
+    width = el.scrollWidth;
+    const shift = (width - avail) / 2; // 가운데 정렬 기준: +shift면 앞부분, -shift면 끝부분이 보임
+    // 이 줄이 불리는 시간 (다음 줄 시각 - 지금 줄 시각). 모르면 5초
+    const cur = currentLyrics[shownLyricIdx], nxt = currentLyrics[shownLyricIdx + 1];
+    const lineMs = cur && nxt ? Math.max(2500, Math.min(12000, nxt.time - cur.time)) : 5000;
+    const at = (dx) => `translate(calc(-50% + ${dx.toFixed(1)}px), -50%)`;
+    // 앞부분을 잠깐 보여 준 뒤(20%) 끝까지 흘리고(85%) 끝부분에서 멈춤. 다음 줄로 넘어가기 전에 끝나 되돌아가지 않게 조금 길게
+    el.__marquee = el.animate([
+        { transform: at(shift), offset: 0 },
+        { transform: at(shift), offset: 0.2 },
+        { transform: at(-shift), offset: 0.85 },
+        { transform: at(-shift), offset: 1 },
+    ], { duration: lineMs * 1.15, easing: 'linear', fill: 'forwards' });
+    if (!isPlaying) el.__marquee.pause();
 }
 
 // 🚨 매개변수에 videoId를 추가 (기본값 null)
@@ -1138,6 +1180,10 @@ function wakeFromIdle() {
 
 function toggleFullscreen() {
     isFullscreen = !isFullscreen;
+    // 바 모드에서 흘러가던 긴 가사 정리 (전체화면에서는 줄바꿈·글자 크기로 맞춤)
+    const curLyricEl = document.getElementById('current-lyric');
+    stopBarMarquee(curLyricEl);
+    curLyricEl?.style.removeProperty('font-size');
     if (isFullscreen) {
         document.body.classList.add('fullscreen-mode');
         ipcRenderer.send('toggle-fullscreen', true);
@@ -1259,8 +1305,8 @@ const ArtVideo = (() => {
     //   (가사 애니메이션 끊김. CSS 흐림·코덱·Chromium 설정으로는 풀리지 않음)
     //   → 메인 프로세스가 화면에서 영상 부분만 캡처해 아주 작게 줄여 줌(main.js capture-art-video).
     //     1초에 약 10번 찍고, 매 프레임 직전 캡처에서 새 캡처로 서서히 섞어 작은 캔버스에 흐리게 그린 뒤 CSS로 늘림
-    const CAPTURE_MS = 100;       // 캡처 간격 (찍는 데 걸린 시간을 빼고 다음 캡처를 예약)
-    const BLEND_MS = 90;          // 새 캡처로 넘어가는 시간 (캡처 간격보다 조금 짧게 → 다음 캡처가 오기 전에 다 넘어가 튀지 않음)
+    const CAPTURE_MS = 25;       // 캡처 간격 (찍는 데 걸린 시간을 빼고 다음 캡처를 예약)
+    const BLEND_MS = 20;          // 새 캡처로 넘어가는 시간 (캡처 간격보다 조금 짧게 → 다음 캡처가 오기 전에 다 넘어가 튀지 않음)
     const CAPTURE_AFTER_MS = 650; // 영상이 나타난 뒤 첫 캡처까지 (영상이 나타나는 동안 찍으면 앨범 아트가 섞임, style.css 0.6초)
     const BG_CANVAS_W = 128;      // 배경 캔버스 폭 (높이는 창 비율대로). 클수록 덜 흐림 (main.js 캡처 크기와 같게)
     const BG_BLUR_PX = 2;         // 캔버스 안 흐림. 화면에서는 배율만큼 커짐 (128px 캔버스 → 약 12배, 2px ≈ 화면 24px)

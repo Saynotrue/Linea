@@ -94,7 +94,7 @@ app.whenReady().then(() => {
     require('./server.js');
 
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-    const barWidth = 700;
+    const barWidth = BAR_WIDTH;
     const barHeight = 44;
 
     win = new BrowserWindow({
@@ -266,8 +266,8 @@ app.whenReady().then(() => {
         const currentScreen = screen.getPrimaryDisplay().workAreaSize;
         win.setResizable(true);
         if (mode === 'eq') {
-            win.setSize(700, 44);
-            win.setPosition(Math.floor((currentScreen.width - 700) / 2), currentScreen.height - 44 - 4);
+            win.setSize(BAR_WIDTH, 44);
+            win.setPosition(Math.floor((currentScreen.width - BAR_WIDTH) / 2), currentScreen.height - 44 - 4);
             if (win && !win.isDestroyed()) win.webContents.send('change-style', 'eq');
         } else if (mode === 'lp') {
             win.setSize(320, 360);
@@ -310,6 +310,9 @@ app.whenReady().then(() => {
 // ─── 전체 화면 제어 통신 ────────────────────────────────
 // 🚨 macOS는 '단순 전체화면'(simple fullscreen) 사용: 기본 전체화면은 노치 양옆(메뉴 막대 줄)을 검게 비워 두지만,
 //    단순 전체화면은 메뉴 막대·Dock을 숨기고 그 줄까지 창을 늘려 화면 전체를 채움 (별도 데스크탑 공간도 만들지 않음)
+// Bar 위젯 폭: 가사 칸 = 폭 - 왼쪽 곡 정보 240px - 오른쪽 이퀄라이저·버튼 300px (style.css #lyrics-container)
+//   (700이면 가사 칸이 160px뿐이라 가사가 잘렸음 → 920이면 380px)
+const BAR_WIDTH = 920;
 const USE_SIMPLE_FULLSCREEN = process.platform === 'darwin';
 // 설정 창을 전체화면 위에 띄웠는지 (닫을 때 바·LP 크기로 되돌리지 않음)
 let settingsOverFullscreen = false;
