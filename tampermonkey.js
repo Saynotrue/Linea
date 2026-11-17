@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linea Connector (YouTube Music)
 // @namespace    http://tampermonkey.net/
-// @version      9.4
+// @version      9.5
 // @author       You
 // @match        https://music.youtube.com/*
 // @match        https://www.youtube.com/embed/*
@@ -609,9 +609,10 @@
     // 🚨 볼륨 보정: 영상 볼륨은 분석기에 들어가기 전에 적용되므로, 유튜브 뮤직 볼륨을 줄이면 파형도 작아짐.
     //    볼륨만큼 줄어든 데시벨(예: 50% → -6dB)만큼 분석 범위를 같이 내려서 볼륨과 관계없이 같은 파형을 보여줌.
     //    (음소거·볼륨 0이면 분석할 소리 자체가 없으므로 보정 불가)
-    // 분석 범위: 기본값(-100 ~ -30dB)보다 15dB 위로 올림 → 베이스가 큰 곡도 저음역이 최대치(255)에 붙지 않음
-    //   (위젯이 15dB만큼 다시 더해 표시하므로 보통 음량의 막대 높이는 그대로, 큰 소리만 더 높이 올라감)
-    const BASE_MIN_DB = -85, BASE_MAX_DB = -15;
+    // 분석 범위: -85 ~ -5dB (80dB 폭). 아주 크게 마스터링된 곡(예: SHAUN - Way Back Home)은 -15dB로는 저음역이
+    //   최대치(255)에 절반 넘게 붙어 킥이 묻혔음 → 위쪽만 10dB 넓힘 (작은 소리 쪽은 그대로)
+    //   위젯은 함께 보내는 범위(db)로 원래 기준(-100 ~ -30dB)의 값으로 되돌려 표시하므로 보통 곡의 막대 높이는 그대로
+    const BASE_MIN_DB = -85, BASE_MAX_DB = -5;
     let compensatedVolume = 1;
     function compensateVolume(volume) {
         const v = Math.max(volume, 0.01);
@@ -684,7 +685,7 @@
                             dataArray[12] || 0, dataArray[16] || 0, dataArray[20] || 0,
                             dataArray[24] || 0
                         ];
-                        ws.send(JSON.stringify({ type: 'eq_data', data: eqData }));
+                        ws.send(JSON.stringify({ type: 'eq_data', data: eqData, db: [BASE_MIN_DB, BASE_MAX_DB] }));
                     }
                 }
             }

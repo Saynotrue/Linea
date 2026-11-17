@@ -1941,6 +1941,8 @@ function startEQ() {
         const bars = document.querySelectorAll('#equalizer .bar');
         let currentValues = new Array(10).fill(0);
         let latestEqData = new Array(10).fill(0);
+        // 받은 값의 분석 범위(dB). 스크립트 9.5부터 함께 보냄. 없으면 예전 범위(-85 ~ -15dB)
+        let latestEqRange = [-85, -15];
         let currentRenderMode = '';
         let lastFrameTime = 0;
 
@@ -1969,18 +1971,19 @@ function startEQ() {
         const BASELINE_LOCK_MS = 400;    // 이 시간 동안 기준선을 소리에 고정
         let baselineLock = new Array(10).fill(0);
 
-        // 분석 범위를 올린 만큼(15dB = 255 / 70dB × 15)의 값, 막대 최대 높이 (기본 16px의 배수, 바 높이 44px 안에 들어가도록)
-        const EQ_HEADROOM = 255 / 70 * 15;
+        // 막대 최대 높이 (기본 16px의 배수, 바 높이 44px 안에 들어가도록)
         const EQ_MAX_SCALE = 2.0;
 
-        // 🥁 저음 막대(0~2) 자동 맞춤: 곡마다 저음이 깔린 정도가 달라 위 고정 계산으로는 북소리가 묻히는 곡이 있음
+        // 🥁 저음 막대(0~3) 자동 맞춤: 곡마다 저음이 깔린 정도가 달라 위 고정 계산으로는 북소리가 묻히는 곡이 있음
         //   (예: Imagine Dragons - Thunder는 저음 값이 늘 최대치 근처(193~252)라 막대가 거의 같은 높이에 머묾)
         //   → 막대마다 최근 평균과 흔들림 폭(표준편차)을 재고, 평균에서 튄 정도를 그 곡의 흔들림 폭 기준으로 보여 줌
         //     킥이 칠 때만 튀고 사이에는 내려감. 실제 곡 녹화로 맞춘 값 (Thunder 움직임 약 3배, 일반 곡도 활발)
-        const ADAPTIVE_BARS = 3;
+        //   3번(350~700Hz, 중저음)도 보컬·코드처럼 계속 나는 소리가 많아 예전 계산으로는 거의 안 움직여서 포함
+        //   (녹화한 세 곡에서 저음 0~3번 움직임이 고음 막대와 비슷하거나 조금 크게, 꼭대기에 붙는 시간 10% 이하)
+        const ADAPTIVE_BARS = 4;
         const ADAPT_STAT_MS = 1500; // 평균·흔들림 폭을 재는 시간
         const ADAPT_REST = 0.25;    // 평균일 때의 높이 비율
-        const ADAPT_Z_GAIN = 0.45;  // 흔들림 폭 1배만큼 튀면 높이 비율을 이만큼 올림
+        const ADAPT_Z_GAIN = 0.55;  // 흔들림 폭 1배만큼 튀면 높이 비율을 이만큼 올림
         const ADAPT_SD_FLOOR = 3;   // 흔들림이 거의 없을 때 작은 차이가 과하게 커지지 않게
         const ADAPT_QUIET = 40;     // 이보다 작은 소리는 낮게 (조용한 구간)
         const BAR_MAX_PX = BAR_BASE_PX * EQ_MAX_SCALE;
@@ -2015,8 +2018,12 @@ function startEQ() {
 
             bars.forEach((bar, index) => {
                 // Tampermonkey가 분석 범위를 15dB 올려 보내므로 그만큼 더해 원래 높이로 복원 (255를 넘는 값 = 예전엔 최대치에 붙던 큰 소리)
+                // 받은 값(0~255)을 데시벨로 되돌린 뒤 원래 기준(-100 ~ -30dB)의 값으로 → 스크립트의 분석 범위가 달라도 같은 높이
+                //   (예전 범위 -85 ~ -15dB에서는 raw + 15dB만큼(약 55)과 같음. 255를 넘는 값 = 큰 소리)
                 const raw = latestEqData[index] || 0;
-                let targetValue = (raw > 0 ? raw + EQ_HEADROOM : 0) * 0.5;
+                const [minDb, maxDb] = latestEqRange;
+                const db = minDb + (raw / 255) * (maxDb - minDb);
+                let targetValue = (raw > 0 ? (db + 100) / 70 * 255 : 0) * 0.5;
                 const diff = targetValue - currentValues[index];
                 const tau = diff > 0 ? ATTACK_MS : (BAR_RELEASE_MS[index] ?? RELEASE_MS);
                 currentValues[index] += diff * (1 - Math.exp(-dt / tau));
@@ -2075,6 +2082,7 @@ function startEQ() {
             const msg = JSON.parse(event.data);
             if (msg.type === 'eq_data') {
                 latestEqData = msg.data;
+                if (Array.isArray(msg.db) && msg.db.length === 2) latestEqRange = msg.db;
                 if (!eqAnimationFrameId) {
                     eqAnimationFrameId = requestAnimationFrame(renderVisualizer);
                 }

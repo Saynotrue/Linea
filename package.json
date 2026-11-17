@@ -1,6 +1,6 @@
 {
   "name": "linea",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Linea - 유튜브 뮤직 싱크 가사 위젯",
   "main": "main.js",
   "scripts": {
