@@ -203,14 +203,18 @@ Chrome, Edge, Whale 등 크롬 계열 브라우저(Chrome 111 이상)에서 동�
 #### Azure Translator 키 발급과 설정 (무료, 매월 200만 자)
 
 1. [Azure Portal](https://portal.azure.com/)에 가입하고 로그인합니다(본인 확인용 카드 등록이 필요하지만 무료 요금제는 과금되지 않습니다).
-2. **리소스 만들기** → **Translator**를 검색해 만듭니다.
+2. 위쪽 검색창에 `Translator`를 입력하고, 결과의 **Marketplace → Translator**를 누른 뒤 **만들기**를 누릅니다.
+   (Microsoft Entra ID의 Translator(서비스 사용자)나 Microsoft Foundry가 아닙니다.)
+   - **리소스 그룹**: **새로 만들기** → 아무 이름 (예: `linea`)
+   - **이름**: Azure 전체에서 겹치지 않는 아무 이름
    - **지역**: 가까운 곳(예: Korea Central)을 고릅니다.
    - **가격 책정 계층**: **Free F0**를 고릅니다.
 3. 만든 리소스 → **키 및 엔드포인트**에서 **키 1**과 **위치/지역**(예: `koreacentral`)을 확인합니다.
 4. 위젯의 트레이 아이콘 → **설정** → **Azure Translator 키**에 키와 지역을 넣고 **저장**을 누릅니다. 리소스 지역이 **전역(Global)**이면 지역은 비워 둡니다.
 5. 상태가 `사용 중`으로 바뀌고 이번 달 사용량이 보이면 완료입니다. 키나 지역이 틀리면 바로 안내가 나옵니다.
 
-- 사용량은 Azure가 키로 알려 주지 않아, 이 앱이 보낸 글자 수를 세어 보여 줍니다(다른 곳에서 같은 키를 쓰면 그만큼 다를 수 있음).
+- 사용량은 Azure가 키로 알려 주지 않아, 이 앱이 보낸 글자 수를 세어 보여 줍니다(다른 곳에서 같은 키를 쓰면 그만큼 다를 수 있음). 남은 곡 수는 이번 달 번역한 곡의 평균 글자 수로 계산합니다(3곡 전까지는 한 곡 1,000자로 어림).
+- Azure 무료 계정은 30일 체험이 끝날 무렵 **종량제로 업그레이드**하라는 안내가 옵니다. 업그레이드하지 않으면 구독이 멈춰 키가 막힐 수 있습니다. 업그레이드해도 Free F0 리소스는 계속 무료입니다.
 - 무료 한도를 다 쓰면 그달은 구글 번역을 쓰고, 다음 달에 다시 Azure로 번역합니다. 무료(F0) 요금제는 한도를 넘어도 요금이 나가지 않습니다.
 
 키는 이 컴퓨터에만 암호화해서 저장되며(macOS 키체인 / Windows DPAPI), Azure 외의 곳으로 보내지 않습니다. **삭제**를 누르면 지워집니다.
@@ -277,6 +281,10 @@ Chrome, Edge, Whale 등 크롬 계열 브라우저(Chrome 111 이상)에서 동�
 - 가사 검색을 위해 곡 제목과 가수 이름을 가사 제공처(lrclib 등)에 보냅니다.
 - 번역을 켜면 가사 내용을 구글 번역으로, Azure 키를 설정했으면 Microsoft Azure로 보냅니다.
 - 번역 결과는 이 컴퓨터의 앱 데이터 폴더(`translations.json`)에만 저장됩니다.
+  - macOS: `~/Library/Application Support/Linea/` (Linea Player는 `Linea Player/`)
+  - Windows: `%APPDATA%\Linea\` (Linea Player는 `Linea Player\`)
+  - 앱 이름이 바뀌기 전부터 쓰던 경우에는 예전 폴더(`music-lyrics-widget`, Linea Player는 `music-lyrics-widget-standalone`)를 그대로 씁니다.
+  - `translations.json`을 지우면 저장된 번역이 모두 지워지고, 다음에 들을 때 다시 번역합니다.
 - 영상으로 볼 때는 유튜브의 퍼가기(임베드) 플레이어로 영상을 받아 옵니다.
 - 위젯과 브라우저 사이의 통신은 이 컴퓨터 안(127.0.0.1)에서만 이뤄집니다.
 

@@ -730,7 +730,12 @@ app.get('/lyrics', async (req, res) => {
     const durationClose = (r) => !playingSec || !r.duration || Math.abs(r.duration - playingSec) <= 15;
     // 표기 문자 비교에 쓸 가수: 곡명으로 쓰인 후보(예: "(星座になれたら : 결속 밴드)"의 星座になれたら)는 제외하고,
     //   커버곡이면 커버 가수(유튜브 뮤직 가수)도 제외 → 원곡 가수만 남김
-    const realOriginalArtists = original.artists.filter(a => !original.tracks.includes(a) && !original.titles.includes(a));
+    // 영문 곡명 옆의 한글은 곡명의 한국어 표기일 가능성이 큼 (예: "phony [포니 / ツミキ]"의 포니 → 원곡 가수는 ツミキ)
+    //   곡명에 한글이 없고 일본어 표기 가수 후보가 따로 있으면, 한글만으로 된 후보는 가수에서 뺌
+    const hangulOnly = (a) => /[가-힣]/.test(a) && !/[a-zA-Zぁ-ゟァ-ヿ一-龥]/.test(a);
+    const looksLikeKoreanTitle = (a) => hangulOnly(a) && !/[가-힣]/.test(cleanTitle)
+        && original.artists.some(o => /[ぁ-ゟァ-ヿ一-龥]/.test(o));
+    const realOriginalArtists = original.artists.filter(a => !original.tracks.includes(a) && !original.titles.includes(a) && !looksLikeKoreanTitle(a));
     // 커버가 아니면 유튜브 뮤직 가수와 그 영어 표기(예: 아카네 리제 / Akane Lize)도 비교 → 다른 가수의 동명곡(예: Festa / Alex Britti) 차단
     const compareArtists = isCover ? realOriginalArtists : [...realOriginalArtists, cleanArtist, englishMeta?.artist].filter(Boolean);
     const compareScripts = new Set(compareArtists.flatMap(a => [...scriptsOf(a || '')]));
@@ -738,8 +743,18 @@ app.get('/lyrics', async (req, res) => {
     const performerNames = [cleanArtist, artist || '', ...coverArtists].map(normalize).filter(n => n.length >= 2);
     const isPerformer = (a) => { const n = normalize(a); return !!n && performerNames.some(p => p.includes(n) || n.includes(p)); };
     const originalArtistScripts = [...new Set(realOriginalArtists.filter(a => !isPerformer(a)).flatMap(a => [...scriptsOf(a)]))].filter(sc => sc !== 'latin');
+    // 가사가 원곡 가수 이름의 문자(한글/일본어)로 '주로' 쓰였는지 (몇 글자 섞인 것만으로는 인정하지 않음)
+    //   예: phony / ツミキ 커버에 Will Stetson의 영어 커버 가사가 붙던 문제 (영어 가사에 "パラッダ" 몇 글자가 있어 통과)
+    //   영어가 섞인 가사(J-pop, K-pop)도 통과하도록 해당 문자 비중이 25% 이상이면 인정
+    const scriptShare = (lyrics, sc) => {
+        const text = lyrics.replace(/\[[^\]]*\]/g, '');
+        const count = (re) => (text.match(re) || []).length;
+        const ko = count(/[가-힣]/g), ja = count(/[ぁ-ゟァ-ヿ]/g) + count(/[一-龥]/g) * 0.5, en = count(/[a-zA-Z]/g) / 4;
+        const total = ko + ja + en;
+        return total ? ({ ko, ja }[sc] || 0) / total : 0;
+    };
     const lyricsMatchOriginalArtistScript = (lyrics) =>
-        originalArtistScripts.length === 0 || [...scriptsOf(lyrics)].some(sc => originalArtistScripts.includes(sc));
+        originalArtistScripts.length === 0 || originalArtistScripts.some(sc => scriptShare(lyrics, sc) >= 0.25);
     const isSafeFallback = (r) => {
         if (!queryTitles.has(normalize(r.trackName))) return false;
         if (!durationClose(r)) return false;
