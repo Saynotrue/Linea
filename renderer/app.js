@@ -44,7 +44,6 @@ let appConfig = {
     trayIcon: 'player',
     showLyrics: false, // 전체화면 가사 창 (기본: 숨김 → 곡 정보가 가운데)
     showTranslation: false, // 전체화면 가사 번역 (원문 아래에 한국어 번역)
-    aiTranslation: true, // AI 문맥 번역 사용 (끄면 NVIDIA 키가 있어도 구글 번역만)
     videoBackground: 'blur' // 영상으로 볼 때의 배경: 'blur'(같은 영상을 흐리게) | 'album'(앨범 아트 색. 영상을 하나만 재생해 가벼움)
 };
 
@@ -850,7 +849,6 @@ async function fetchLyrics(title, artist, album, videoId = null, retryCount = 0)
         if (title !== lastTitle || artist !== lastArtist) return;
 
         currentLyrics = res.lyrics ? parseLRC(res.lyrics) : [];
-        updateTranslateBadge();
         if (currentLyrics.length > 0) {
             lyricsSettledTitle = title;
             lastLyricIdx = -1;
@@ -937,15 +935,14 @@ let translationRequestFor = null; // 지금 번역을 요청 중인 가사 (곡�
 
 const fetchTranslation = (lines, title, artist, prefetch = false) => fetch('http://127.0.0.1:8888/translate', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    // allowAi: false면 서버에 저장된 AI 번역 대신 구글 번역을 줌
-    body: JSON.stringify({ lines, title, artist, prefetch, allowAi: appConfig.aiTranslation }),
+    body: JSON.stringify({ lines, title, artist, prefetch }),
 }).then(r => r.json());
 
 async function requestTranslation() {
     if (!appConfig.showTranslation || currentLyrics.length === 0) return;
     const lyrics = currentLyrics;
     if (lyrics.translationDone || translationRequestFor === lyrics) return;
-    if (lyrics.koreanLyrics) { // 번역 서버에 보내지 않고 끝냄 (AI 번역 대기열도 다음 곡 차례로)
+    if (lyrics.koreanLyrics) { // 번역 서버에 보내지 않고 끝냄
         lyrics.translationDone = true;
         showToast('한국어 가사라 번역하지 않아요', 1800);
         return;
@@ -959,8 +956,6 @@ async function requestTranslation() {
             lyrics.translationDone = true;
             res.translations.forEach((tr, i) => { if (lyrics[i] && tr) lyrics[i].tr = tr; });
             lastLyricIdx = -1; // 번역이 붙은 줄로 바로 다시 그림
-            if (res.ai) { lyrics.aiTranslated = true; updateTranslateBadge(); }
-            else if (appConfig.aiTranslation) refineTranslation(lyrics); // 구글 번역을 먼저 보여 주고, 문맥 번역이 오면 바꿔 끼움
         } else if (res.skip) {
             lyrics.translationDone = true;
             showToast('한국어 가사라 번역하지 않아요', 1800);
@@ -977,47 +972,17 @@ async function requestTranslation() {
     }
 }
 
-// 문맥 번역 (서버의 NVIDIA 언어 모델): 실패하거나 키가 없으면 조용히 구글 번역을 유지
-// priority: 'current'(지금 곡, 서버가 맨 앞에 세움) / 'next'(다음 곡 미리 번역)
-const fetchAiTranslation = (lines, title, artist, priority = 'current') => fetch('http://127.0.0.1:8888/translate-ai', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lines, title, artist, priority }),
-}).then(r => r.json());
-
-// 지금 곡 번역이 문맥 번역(AI)으로 바뀐 상태면 번역 버튼 오른쪽 아래에 "AI" 표시
-function updateTranslateBadge() {
-    btnTranslate?.classList.toggle('ai', !!(appConfig.showTranslation && currentLyrics.aiTranslated));
-}
-
-async function refineTranslation(lyrics) {
-    if (!appConfig.aiTranslation || lyrics.koreanLyrics || lyrics.embeddedTranslation) return;
-    try {
-        const res = await fetchAiTranslation(lyrics.map(l => l.text), lastTitle, lastArtist);
-        if (currentLyrics !== lyrics || !res.translations || !appConfig.aiTranslation) return; // 그사이 AI 번역을 끈 경우도 버림
-        res.translations.forEach((tr, i) => { if (lyrics[i]) lyrics[i].tr = tr || lyrics[i].tr; });
-        lyrics.aiTranslated = true;
-        updateTranslateBadge();
-        if (appConfig.showTranslation) lastLyricIdx = -1;
-    } catch (e) { }
-}
 
 if (btnTranslate) {
-    // 글자 번역 아이콘 (文 → 가). 문맥 번역(AI)이 끝나면 "가"의 ㅏ 아래쪽에 "AI"를 겹쳐 씀
-    //   AI 글자 모양을 따라 둘레만큼 "가"의 획을 지워(마스크) AI가 가 앞에서 뒤를 가리는 것처럼 보이게 함
-    //   (배경색과 관계없이 깔끔하게 비고, 아이콘 자체는 움직이지 않음)
+    // 글자 번역 아이콘 (文 → 가)
     btnTranslate.innerHTML = `<svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <defs><mask id="tr-ai-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
-            <rect width="24" height="24" fill="#fff"/><text class="tr-ai-cut" x="16.2" y="22.2" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="6.4" font-weight="800" letter-spacing="-0.3" fill="#000" stroke="#000" stroke-width="1.8" stroke-linejoin="round">AI</text>
-        </mask></defs>
         <path d="M3 5h8M7 3v2M9.5 5c-.7 3.2-2.8 5.9-5.5 7.5M5.5 8.5c1 1.7 2.6 3.1 4.5 4"/>
-        <path mask="url(#tr-ai-mask)" d="M13 12.5h3.6c0 2.4-1 4.2-3.3 5.5M19.5 11.5v9M19.5 15.6h2"/>
-        <text class="tr-ai-label" x="16.2" y="22.2" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="6.4" font-weight="800" letter-spacing="-0.3" fill="currentColor" stroke="none">AI</text>
+        <path d="M13 12.5h3.6c0 2.4-1 4.2-3.3 5.5M19.5 11.5v9M19.5 15.6h2"/>
     </svg>`;
     btnTranslate.addEventListener('click', () => {
         appConfig.showTranslation = !appConfig.showTranslation;
         saveSettings();
         lastLyricIdx = -1; // 번역 줄을 붙이거나 떼고 다시 그림
-        updateTranslateBadge();
         requestTranslation();
     });
 }
@@ -1040,7 +1005,6 @@ async function prefetchNextTrack(next) {
         const lines = parsed.map(l => l.text);
         if (!lines.length) return;
         await fetchTranslation(lines, next.title, next.artist, true);
-        if (appConfig.aiTranslation) await fetchAiTranslation(lines, next.title, next.artist, 'next');
     } catch (e) { /* 미리 준비 실패는 무시 (곡이 시작되면 평소처럼 찾음) */ }
 }
 
@@ -1637,7 +1601,6 @@ async function syncWithServer() {
                 lastArtist = track.artist;
                 lastLyricIdx = -1;
                 currentLyrics = [];
-                updateTranslateBadge();
 
                 const trackInfo = document.getElementById('track-info');
                 const lyricsContainer = document.getElementById('lyrics-container');
@@ -2127,8 +2090,6 @@ function stopEQ() {
 //  8. ⚙️ UI 업데이트 및 설정 모달 이벤트 바인딩
 // ═════════════════════════════════════════════════════════════
 function applyConfigToUI() {
-    const aiTranslationToggle = document.getElementById('ai-translation-toggle');
-    if (aiTranslationToggle) aiTranslationToggle.checked = appConfig.aiTranslation !== false;
 
     const autoFadeToggle = document.getElementById('auto-fade-toggle');
     if (autoFadeToggle) autoFadeToggle.checked = appConfig.autoFade;
@@ -2206,36 +2167,88 @@ function disableAutoFade() {
     document.getElementById('opacity-section')?.classList.remove('section-disabled');
 }
 
-// 설정 창: NVIDIA API 키 (AI 가사 문맥 번역용) — 메인 프로세스가 이 컴퓨터에만 암호화해 저장
-function showNvidiaKeyStatus(status) {
-    const el = document.getElementById('nvidia-key-status');
-    if (!el) return;
-    el.textContent = !status.set ? '미설정' : `${status.source === 'env' ? '환경 변수' : '사용 중'} · ${status.masked}`;
-    el.classList.toggle('set', !!status.set);
-}
-ipcRenderer.invoke('get-nvidia-key-status').then(showNvidiaKeyStatus).catch(() => { });
 
-async function saveNvidiaKey(value) {
-    const input = document.getElementById('nvidia-key-input');
-    const status = await ipcRenderer.invoke('set-nvidia-key', value);
-    showNvidiaKeyStatus(status);
-    if (status.error === 'format') return showToast('nvapi-로 시작하는 키를 붙여 넣어 주세요', 2200);
+// 설정 창: Azure Translator 키·지역 (가사 번역) — 메인 프로세스가 이 컴퓨터에만 암호화해 저장. 있으면 구글 번역 대신 Azure
+function showAzureKeyStatus(status) {
+    const el = document.getElementById('azure-key-status');
+    if (!el) return;
+    el.textContent = !status.set ? '미설정'
+        : `${status.source === 'env' ? '환경 변수' : '사용 중'} · ${status.masked}${status.region ? ` · ${status.region}` : ''}`;
+    el.classList.toggle('set', !!status.set);
+    const region = document.getElementById('azure-region-input');
+    if (region && status.set && document.activeElement !== region) region.value = status.region || '';
+}
+ipcRenderer.invoke('get-azure-key-status').then(showAzureKeyStatus).catch(() => { });
+
+// Azure 이번 달 사용량: 설정 창을 열 때와 키를 저장했을 때 받아 옴 (무료는 매월 200만 자)
+//   Azure는 키로 사용량을 알려 주지 않아 이 앱이 보낸 글자 수를 셈. check: 키를 저장했을 때 키·지역이 맞는지 확인
+async function refreshAzureUsage(check = false) {
+    const el = document.getElementById('azure-usage');
+    if (!el) return;
+    let u;
+    try { u = await fetch(`http://127.0.0.1:8888/azure-usage${check ? '?check=1' : ''}`).then(r => r.json()); } catch (e) { u = { set: false }; }
+    el.hidden = !u.set;
+    el.classList.remove('warn');
+    if (!u.set) return;
+    if (u.error) {
+        el.textContent = u.error === 'auth' ? '키 또는 지역이 맞지 않아요 · 구글 번역을 쓰는 중'
+            : u.error === 'quota' ? '이번 달 무료 한도를 다 썼어요 · 다음 달까지 구글 번역을 써요'
+                : '번역 서버에 연결하지 못했어요';
+        el.classList.add('warn');
+        return;
+    }
+    const ratio = u.limit ? Math.min(1, u.count / u.limit) : 0;
+    const fmt = (n) => n.toLocaleString('ko-KR');
+    el.replaceChildren();
+    const text = document.createElement('div');
+    // 남은 곡 수: 이번 달 번역한 곡의 평균 글자 수로 계산 (3곡 미만이면 한 곡 1,000자로 어림)
+    const perSong = u.perSong || 1000;
+    text.textContent = `이번 달 약 ${fmt(u.count)} / ${fmt(u.limit)}자 · 남은 약 ${fmt(Math.floor(Math.max(0, u.limit - u.count) / perSong))}곡`
+        + (u.measured ? ` (한 곡 평균 ${fmt(perSong)}자)` : '');
+    const bar = document.createElement('div');
+    bar.className = 'usage-bar';
+    const fill = document.createElement('div');
+    fill.className = 'usage-fill';
+    fill.style.width = `${(ratio * 100).toFixed(1)}%`;
+    bar.appendChild(fill);
+    el.append(text, bar);
+    el.classList.toggle('warn', ratio >= 0.9);
+}
+refreshAzureUsage();
+
+async function saveAzureKey(key) {
+    const input = document.getElementById('azure-key-input');
+    const region = document.getElementById('azure-region-input');
+    const status = await ipcRenderer.invoke('set-azure-key', { key, region: key ? region?.value : '' });
+    showAzureKeyStatus(status);
+    if (status.error === 'format') return showToast('Azure 키를 그대로 붙여 넣어 주세요', 2200);
+    if (status.error === 'region') return showToast('지역은 koreacentral처럼 영문으로 적어 주세요', 2400);
     if (status.error) return showToast('키를 저장하지 못했어요', 2200);
     if (input) input.value = ''; // 입력한 키는 화면에 남기지 않음
-    showToast(value ? 'NVIDIA API 키를 저장했어요' : 'NVIDIA API 키를 삭제했어요', 1800);
-    // 번역을 켜 둔 곡이면 새 키로 바로 문맥 번역 시도
-    if (value && appConfig.aiTranslation && appConfig.showTranslation && currentLyrics.translationDone && !currentLyrics.aiTranslated && !currentLyrics.embeddedTranslation) {
-        refineTranslation(currentLyrics);
+    if (!key && region) region.value = '';
+    showToast(key ? 'Azure 번역 키를 저장했어요' : 'Azure 번역 키를 삭제했어요', 1800);
+    refreshAzureUsage(!!key);
+    // 번역을 켜 둔 곡이면 새 엔진으로 바로 다시 번역
+    const lyrics = currentLyrics;
+    if (appConfig.showTranslation && lyrics.length && lyrics.translationDone && !lyrics.embeddedTranslation && !lyrics.koreanLyrics) {
+        lyrics.forEach(l => { delete l.tr; });
+        lyrics.translationDone = false;
+        lastLyricIdx = -1;
+        requestTranslation();
     }
 }
-document.getElementById('nvidia-key-save')?.addEventListener('click', () => {
-    const value = document.getElementById('nvidia-key-input')?.value.trim();
-    if (value) saveNvidiaKey(value);
+document.getElementById('azure-key-save')?.addEventListener('click', () => {
+    const value = document.getElementById('azure-key-input')?.value.trim();
+    if (value) saveAzureKey(value);
+    else showToast('키를 먼저 붙여 넣어 주세요', 1800);
 });
-document.getElementById('nvidia-key-input')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.value.trim()) saveNvidiaKey(e.target.value.trim());
-});
-document.getElementById('nvidia-key-clear')?.addEventListener('click', () => saveNvidiaKey(''));
+for (const id of ['azure-key-input', 'azure-region-input']) {
+    document.getElementById(id)?.addEventListener('keydown', (e) => {
+        const value = document.getElementById('azure-key-input')?.value.trim();
+        if (e.key === 'Enter' && value) saveAzureKey(value);
+    });
+}
+document.getElementById('azure-key-clear')?.addEventListener('click', () => saveAzureKey(''));
 
 document.getElementById('opacity-slider')?.addEventListener('input', (e) => {
     appConfig.opacity = parseFloat(e.target.value);
@@ -2244,24 +2257,6 @@ document.getElementById('opacity-slider')?.addEventListener('input', (e) => {
 });
 document.getElementById('opacity-slider')?.addEventListener('change', saveSettings);
 
-// AI 문맥 번역 켜고 끄기: 지금 곡 번역도 바로 바꿈
-document.getElementById('ai-translation-toggle')?.addEventListener('change', (e) => {
-    appConfig.aiTranslation = e.target.checked;
-    saveSettings();
-    const lyrics = currentLyrics;
-    if (!appConfig.showTranslation || !lyrics.length || lyrics.embeddedTranslation) return;
-    if (appConfig.aiTranslation) {
-        if (lyrics.translationDone && !lyrics.aiTranslated) refineTranslation(lyrics);
-    } else if (lyrics.aiTranslated) {
-        // AI 번역을 지우고 구글 번역으로 다시 받음 (서버에 저장돼 있어 바로 옴)
-        lyrics.forEach(l => { delete l.tr; });
-        lyrics.aiTranslated = false;
-        lyrics.translationDone = false;
-        updateTranslateBadge();
-        lastLyricIdx = -1;
-        requestTranslation();
-    }
-});
 
 document.getElementById('auto-fade-toggle')?.addEventListener('change', (e) => {
     appConfig.autoFade = e.target.checked;
@@ -2323,6 +2318,7 @@ ipcRenderer.on('open-settings', (event, opts) => {
     modal.classList.remove('closing');
     modal.classList.add('show');
     wakeFromIdle(); // 숨겨진 커서를 다시 보이게
+    refreshAzureUsage();
 });
 
 ipcRenderer.on('show-widget-after-settings', () => document.body.classList.remove('settings-open'));

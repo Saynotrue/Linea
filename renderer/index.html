@@ -180,28 +180,21 @@
         </div>
       </div>
 
-      <div class="settings-section settings-row-between">
-        <div class="shortcut-label-group">
-          <div class="settings-label">AI 문맥 번역</div>
-          <div class="shortcut-hint">끄면 키가 있어도 구글 번역만 사용</div>
-        </div>
-        <label class="toggle">
-          <input id="ai-translation-toggle" type="checkbox" checked>
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-
       <div class="settings-section">
         <div class="settings-row-between">
-          <div class="settings-label">AI 가사 번역 · NVIDIA API 키</div>
-          <span id="nvidia-key-status" class="key-status">미설정</span>
+          <div class="settings-label">가사 번역 · Azure Translator 키</div>
+          <span id="azure-key-status" class="key-status">미설정</span>
         </div>
         <div class="stepper-row key-row">
-          <input id="nvidia-key-input" type="password" placeholder="nvapi-로 시작하는 키 붙여넣기" autocomplete="off" spellcheck="false">
-          <button id="nvidia-key-save" class="stepper-btn">저장</button>
-          <button id="nvidia-key-clear" class="stepper-btn">삭제</button>
+          <input id="azure-key-input" type="password" placeholder="키 붙여넣기 (키 1 또는 키 2)" autocomplete="off" spellcheck="false">
         </div>
-        <div class="shortcut-hint">build.nvidia.com에서 무료로 발급 · 이 컴퓨터에만 암호화해 저장 · 없으면 구글 번역만 사용</div>
+        <div class="stepper-row key-row">
+          <input id="azure-region-input" type="text" placeholder="지역 (예: koreacentral · 전역이면 비워 두기)" autocomplete="off" spellcheck="false">
+          <button id="azure-key-save" class="stepper-btn">저장</button>
+          <button id="azure-key-clear" class="stepper-btn">삭제</button>
+        </div>
+        <div id="azure-usage" class="translate-usage" hidden></div>
+        <div class="shortcut-hint">Azure Portal에서 Translator 리소스를 무료(F0)로 만들면 매월 200만 자 · 곡 전체 문맥을 보고 번역 · 이 컴퓨터에만 암호화해 저장 · 없으면 구글 번역</div>
       </div>
 
       <div class="settings-section settings-row-between">

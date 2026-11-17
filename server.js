@@ -990,20 +990,187 @@ async function googleTranslateLines(lines) {
     return out;
 }
 
+// ─── 번역한 곡 저장 (앱을 다시 켜도 그대로) ─────────────────
+// 한 번 번역한 곡은 이 컴퓨터의 앱 데이터 폴더(translations.json)에 저장해 두고, 같은 가사면 다시 번역하지 않고 바로 씀
+//   (Azure 무료 한도를 아끼고 기다림이 없음). 가사 내용이 같으면 같은 곡으로 봄
+//   엔진별로 따로 저장: Azure 번역이 있으면 그것을 먼저 쓰고, 구글 번역은 Azure 키가 없을 때만 씀
+//   최대 TRANSLATION_STORE_MAX곡. 넘치면 가장 오래 안 쓴 곡부터 지움
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const TRANSLATION_STORE_MAX = 3000;
+const translationStoreFile = path.join(process.env.LINEA_DATA_DIR || path.join(require('os').homedir(), '.linea'), 'translations.json');
+const translationStore = new Map(); // `${engine}:${가사 해시}` → { translations, title, artist, usedAt }
+try {
+    const saved = JSON.parse(fs.readFileSync(translationStoreFile, 'utf8'));
+    for (const [k, v] of saved.items || []) translationStore.set(k, v);
+    console.log(`[가사 번역] 저장된 번역 ${translationStore.size}곡 불러옴`);
+} catch (e) { /* 처음 실행이면 파일이 없음 */ }
+let translationStoreTimer = null;
+function saveTranslationStore() {
+    clearTimeout(translationStoreTimer);
+    translationStoreTimer = setTimeout(writeTranslationStore, 1000);
+}
+// 저장을 기다리는 중에 앱이 꺼지면 바로 씀
+process.on('exit', () => { if (translationStoreTimer) writeTranslationStore(); });
+function writeTranslationStore() {
+    translationStoreTimer = null;
+    try {
+        if (translationStore.size > TRANSLATION_STORE_MAX) {
+            const oldest = [...translationStore.entries()].sort((x, y) => (x[1].usedAt || 0) - (y[1].usedAt || 0));
+            for (const [k] of oldest.slice(0, translationStore.size - TRANSLATION_STORE_MAX)) translationStore.delete(k);
+        }
+        fs.mkdirSync(path.dirname(translationStoreFile), { recursive: true });
+        const tmp = `${translationStoreFile}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify({ version: 1, items: [...translationStore.entries()] }));
+        fs.renameSync(tmp, translationStoreFile); // 쓰는 도중 앱이 꺼져도 이전 파일이 깨지지 않게
+    } catch (e) { console.log(`[가사 번역] 번역 저장 실패: ${e.message}`); }
+}
+const lyricsHash = (text) => crypto.createHash('sha1').update(text).digest('hex');
+function getStoredTranslation(text, hasAzureKey) {
+    const h = lyricsHash(text);
+    for (const engine of hasAzureKey ? ['azure'] : ['azure', 'google']) {
+        const item = translationStore.get(`${engine}:${h}`);
+        if (item) { item.usedAt = Date.now(); saveTranslationStore(); return { translations: item.translations, engine }; }
+    }
+    return null;
+}
+function storeTranslation(text, engine, translations, title, artist) {
+    translationStore.set(`${engine}:${lyricsHash(text)}`, { translations, title: title || '', artist: artist || '', usedAt: Date.now() });
+    saveTranslationStore();
+}
+
+// ─── Azure 번역 (키가 있으면 구글 번역 대신) ─────────────────
+// 무료(F0) 요금제는 매월 200만 자 (가사 한 곡 약 1,500~2,500자). 한 번 번역한 곡은 위에서 저장해 두므로 다시 세지 않음
+//   문맥: 곡 가사 전체를 줄바꿈으로 이은 글 하나로 보내, 앞뒤 줄을 보고 번역하게 함 (말투·대명사·반복구가 곡 안에서 맞음)
+//     돌아온 번역을 줄바꿈으로 다시 나눔. 줄 수가 어긋나면(두 줄을 한 줄로 합치는 등) 줄마다 따로 번역해 다시 받음
+//   키: 설정 창에 저장한 키 > 실행 시 환경 변수 > 셸 설정(~/.zshrc)의 AZURE_TRANSLATOR_KEY / AZURE_TRANSLATOR_REGION
+//     지역(region)은 Azure에서 번역 리소스를 만들 때 고른 곳 (예: koreacentral). 전역(global) 리소스면 비워 둠
+//   실패하면(401 키·지역 오류, 403 이번 달 한도 초과, 429 요청 많음 등) 구글 번역으로
+//   Azure는 키로 사용량을 알려 주지 않아, 이 앱이 보낸 글자 수를 달마다 세어 설정 창에 보여 줌 (azure-usage.json)
+const { execFile } = require('child_process');
+const AZURE_ENDPOINT = 'https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=ko';
+const AZURE_FREE_LIMIT = 2000000;
+const AZURE_KEY_RE = /^[0-9A-Za-z]{32,100}$/;
+const AZURE_REGION_RE = /^[a-z0-9]{2,40}$/;
+let azureShellPromise = null;
+function getAzureCreds() {
+    const key = process.env.AZURE_TRANSLATOR_KEY || '';
+    if (key) return Promise.resolve({ key, region: process.env.AZURE_TRANSLATOR_REGION || '' });
+    if (!azureShellPromise) {
+        azureShellPromise = new Promise(resolve => {
+            if (process.platform === 'win32') return resolve(null);
+            execFile(process.env.SHELL || '/bin/zsh', ['-ic', 'printf "%s\\n%s\\n" "$AZURE_TRANSLATOR_KEY" "$AZURE_TRANSLATOR_REGION"'], { timeout: 5000 }, (err, stdout) => {
+                const [k = '', r = ''] = String(stdout || '').trim().split('\n').slice(-2).map(s => s.trim());
+                resolve(AZURE_KEY_RE.test(k) ? { key: k, region: AZURE_REGION_RE.test(r) ? r : '' } : null);
+            });
+        });
+    }
+    return azureShellPromise;
+}
+
+// 이번 달 보낸 글자 수 (Azure가 세는 방식처럼 공백·줄바꿈 포함 글자 수)
+const azureUsageFile = path.join(path.dirname(translationStoreFile), 'azure-usage.json');
+const thisMonth = () => new Date().toISOString().slice(0, 7); // Azure는 UTC 기준 달마다 초기화
+let azureUsage = { month: thisMonth(), chars: 0, songs: 0, songChars: 0, quotaExceeded: false };
+try { azureUsage = { ...azureUsage, ...JSON.parse(fs.readFileSync(azureUsageFile, 'utf8')) }; } catch (e) { }
+let azureLastError = null; // 'auth' | 'quota' | null — 설정 창 안내용
+function currentAzureUsage() {
+    if (azureUsage.month !== thisMonth()) azureUsage = { month: thisMonth(), chars: 0, songs: 0, songChars: 0, quotaExceeded: false };
+    return azureUsage;
+}
+// song: 곡 하나를 다 번역했을 때 그 곡에 쓴 글자 수 (남은 곡 수를 실제 평균으로 계산하려고)
+function addAzureUsage(chars, quotaExceeded, song) {
+    const u = currentAzureUsage();
+    u.chars += chars;
+    if (quotaExceeded) u.quotaExceeded = true;
+    if (song) { u.songs = (u.songs || 0) + 1; u.songChars = (u.songChars || 0) + song; }
+    try {
+        fs.mkdirSync(path.dirname(azureUsageFile), { recursive: true });
+        fs.writeFileSync(azureUsageFile, JSON.stringify(u));
+    } catch (e) { }
+}
+
+async function azureRequest(creds, texts) {
+    const headers = { 'Ocp-Apim-Subscription-Key': creds.key, 'Content-Type': 'application/json' };
+    if (creds.region) headers['Ocp-Apim-Subscription-Region'] = creds.region;
+    try {
+        const { data } = await axios.post(AZURE_ENDPOINT, texts.map(Text => ({ Text })), { headers, timeout: 15000 });
+        addAzureUsage(texts.reduce((n, t) => n + [...t].length, 0));
+        azureLastError = null;
+        if (!Array.isArray(data) || data.length !== texts.length) throw new Error(`azure count ${data?.length}/${texts.length}`);
+        return data.map(d => String(d?.translations?.[0]?.text || ''));
+    } catch (e) {
+        const status = e.response?.status;
+        const code = e.response?.data?.error?.code;
+        if (status === 401) azureLastError = 'auth';
+        if (status === 403) { azureLastError = 'quota'; if (code === 403001 || code === 403000) addAzureUsage(0, true); }
+        throw e;
+    }
+}
+
+// 줄 목록 → [{ tr, lang }] (구글 번역 함수와 같은 모양)
+async function azureTranslateLines(creds, lines) {
+    // 1) 곡 전체를 한 글로: 앞뒤 문맥을 보고 번역
+    const whole = (await azureRequest(creds, [lines.join('\n')]))[0];
+    const split = whole.split(/\r?\n/);
+    if (split.length === lines.length) return { results: split.map(tr => ({ tr, lang: '' })), mode: '문맥' };
+    // 2) 줄 수가 어긋나면 줄마다 따로 (한 번에 최대 1000줄)
+    console.log(`[가사 번역] Azure 문맥 번역 줄 수가 어긋남 (${split.length}/${lines.length}) → 줄별로 다시`);
+    const out = [];
+    for (let i = 0; i < lines.length; i += 1000) out.push(...await azureRequest(creds, lines.slice(i, i + 1000)));
+    return { results: out.map(tr => ({ tr, lang: '' })), mode: '줄별' };
+}
+
+// Azure 이번 달 사용량 (설정 창에 표시). 키가 없으면 { set: false }
+//   ?check=1: 짧은 글자(2자)를 번역해 키·지역이 맞는지 확인 (키를 저장했을 때)
+app.get('/azure-usage', async (req, res) => {
+    const creds = await getAzureCreds();
+    if (!creds) return res.json({ set: false });
+    if (req.query.check) { try { await azureRequest(creds, ['Hi']); } catch (e) { if (!azureLastError) azureLastError = 'failed'; } }
+    const u = currentAzureUsage();
+    // 한 곡 평균 글자 수: 이번 달 3곡 이상 번역했으면 실제 평균, 아니면 1,000자로 어림
+    const perSong = u.songs >= 3 ? Math.max(100, Math.round(u.songChars / u.songs)) : 1000;
+    res.json({ set: true, count: u.chars, limit: AZURE_FREE_LIMIT, perSong, measured: u.songs >= 3, error: u.quotaExceeded ? 'quota' : azureLastError });
+});
+
 app.post('/translate', async (req, res) => {
     const lines = Array.isArray(req.body?.lines) ? req.body.lines.map(l => String(l ?? '')) : [];
     if (lines.length === 0) return res.json({ translations: [] });
     const cacheKey = lines.join('\n');
-    // 문맥 번역이 이미 끝난 곡(다음 곡 미리 번역 등)은 그 결과를 바로 줌
-    if (req.body.allowAi !== false && aiTranslationCache.has(cacheKey)) return res.json({ ...aiTranslationCache.get(cacheKey), ai: true });
-    if (translationCache.has(cacheKey)) return res.json(translationCache.get(cacheKey));
     if (isKoreanLyrics(lines)) return res.json({ skip: true });
+    // Azure 키가 있으면 Azure 결과를 따로 저장 (키를 나중에 넣어도 구글 결과가 남아 있지 않게)
+    const creds = await getAzureCreds();
+    const engineCacheKey = (creds ? 'azure\n' : '') + cacheKey;
+    if (translationCache.has(engineCacheKey)) return res.json(translationCache.get(engineCacheKey));
+    const stored = getStoredTranslation(cacheKey, !!creds);
+    if (stored) {
+        const body = { translations: stored.translations };
+        cacheSet(translationCache, engineCacheKey, body);
+        console.log(`[가사 번역] 💾 저장된 ${stored.engine === 'azure' ? 'Azure ' : ''}번역 사용: ${req.body.title || ''}`);
+        return res.json(body);
+    }
 
     // 글자가 있는 줄만, 같은 줄은 한 번만 번역 (♪, 빈 줄, 반복되는 후렴 등)
     const unique = [...new Set(lines.filter(l => HAS_LETTER.test(l)))];
     try {
         const t0 = Date.now();
-        const results = await googleTranslateLines(unique);
+        let results = null, engine = 'google', mode = '';
+        // 이번 달 한도를 이미 다 쓴 걸 알면 Azure에 보내지 않음 (다음 달에 다시)
+        if (creds && !currentAzureUsage().quotaExceeded) {
+            try {
+                const before = currentAzureUsage().chars;
+                ({ results, mode } = await azureTranslateLines(creds, unique));
+                addAzureUsage(0, false, currentAzureUsage().chars - before);
+                results.missing = results.filter(r => !r.tr.trim()).length;
+                engine = 'azure';
+            } catch (e) {
+                const status = e.response?.status;
+                const why = status === 403 ? '이번 달 무료 한도 초과' : status === 401 ? '키·지역 오류' : status === 429 ? '요청이 많음' : (status || e.message);
+                console.log(`[가사 번역] Azure 실패 (${why}) → 구글 번역으로`);
+            }
+        }
+        if (!results) results = await googleTranslateLines(unique);
         const byLine = new Map(unique.map((line, i) => [line, results[i]]));
         const translations = lines.map(line => {
             const r = byLine.get(line);
@@ -1012,309 +1179,19 @@ app.post('/translate', async (req, res) => {
         });
         // 다시 요청해도 절반 넘게 비면 실패로 알림 (위젯이 "잠시 후 다시" 안내). 일부만 비면 있는 만큼 보여 주되 저장하지 않음 (다음에 다시 받게)
         if (results.missing > unique.length / 2) {
-            console.log(`[가사 번역] 실패: 구글이 빈 번역을 돌려줌 (${results.missing}/${unique.length}줄)`);
+            console.log(`[가사 번역] 실패: ${engine === 'azure' ? 'Azure' : '구글'}가 빈 번역을 돌려줌 (${results.missing}/${unique.length}줄)`);
             return res.json({ error: 'failed' });
         }
         const body = { translations };
-        if (results.missing === 0) cacheSet(translationCache, cacheKey, body);
-        console.log(`[가사 번역] ✅ ${req.body.prefetch ? '⏭️ 다음 곡 ' : ''}${req.body.title || ''} ${unique.length}줄 ${Date.now() - t0}ms${results.missing ? ` (빈 번역 ${results.missing}줄)` : ''}`);
+        // Azure가 실패해 구글로 받은 결과는 저장하지 않음 (다음에 Azure로 다시 받게)
+        if (results.missing === 0 && (engine === 'azure' || !creds)) cacheSet(translationCache, engineCacheKey, body);
+        if (results.missing === 0) storeTranslation(cacheKey, engine, translations, req.body.title, req.body.artist);
+        console.log(`[가사 번역] ✅ ${engine === 'azure' ? `Azure(${mode}) ` : ''}${req.body.prefetch ? '⏭️ 다음 곡 ' : ''}${req.body.title || ''} ${unique.length}줄 ${Date.now() - t0}ms${results.missing ? ` (빈 번역 ${results.missing}줄)` : ''}`);
         res.json(body);
     } catch (e) {
         console.log(`[가사 번역] 실패: ${e.response?.status || e.message}`);
         res.json({ error: e.response?.status === 429 ? 'rate_limited' : 'failed' });
     }
-});
-
-// ─── 문맥 번역 (NVIDIA build 무료 언어 모델) ─────────────────
-// 구글 번역은 줄마다 따로 옮겨 말투·어미가 들쭉날쭉하므로, 곡 전체를 한 번에 넘겨 흐름과 말투를 맞춘 번역으로 바꿔 끼움
-// 키(NVIDIA_API_KEY)가 없거나 실패하면 구글 번역이 그대로 남음
-const { execFile } = require('child_process');
-const NVIDIA_CHAT_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
-// 첫 시도는 GLM, 실패하면 다시 시도할 때 다른 모델 (무료 서버가 특정 곡에서 계속 내부 오류(500)를 내는 경우가 있음)
-//   NVIDIA가 무료 모델을 내리면 410(Gone)이 옴 → 목록(https://integrate.api.nvidia.com/v1/models)에 있는 모델로 바꿀 것
-//   (2026-11: deepseek-ai/deepseek-v4.1-flash가 내려가 410)
-const NVIDIA_MODELS = ['z-ai/glm-5.3-flash', 'mistralai/mistral-large-4-1t-a52b'];
-// 무료 서버는 대기 순번이 길고(수십 초) 가사가 길면 답을 쓰는 데도 오래 걸리므로, 전체 시간 대신
-// "아무 응답이 없는 시간"으로 끊음 (답을 조금씩 받아 오는 중이면 기다림)
-const AI_FIRST_TOKEN_TIMEOUT_MS = 150000; // 대기 순번 (첫 글자가 올 때까지)
-const AI_IDLE_TIMEOUT_MS = 30000;         // 답을 쓰기 시작한 뒤 글자가 끊긴 시간
-const AI_RETRY_DELAY_MS = 5000;
-const aiTranslationCache = new Map();
-const aiTranslationPending = new Map(); // 같은 곡을 지금 곡·다음 곡 미리 번역에서 동시에 요청해도 한 번만 호출
-// 무료 서버에 여러 곡을 동시에 보내면 서로 순번을 밀어내 둘 다 늦어지므로 한 곡씩 차례로 보냄
-// 줄 세우는 규칙: 지금 곡이 맨 앞, 다음 곡(미리 번역)은 그 뒤. 곡을 넘겨 더 이상 필요 없어진 대기 요청은 버림
-//   (버리지 않으면 넘긴 곡들의 요청이 쌓여 정작 지금 곡·다음 곡 차례가 오지 않음)
-// 대기열은 언제나 "지금 곡 → 다음 곡" 기준으로 다시 짬 (한 번에 한 곡씩 무료 서버에 보냄)
-//   - 다른 곡을 고르면: 이전 곡 번역은 진행 중이어도 그만두고 새로 고른 곡부터 번역
-//   - 다음 곡 번역 중에 지금 곡 요청이 오면: 다음 곡은 멈췄다가 지금 곡 뒤에 다시 줄 섬
-//   - 다음 곡이 바뀌면: 이전 다음 곡 번역은 대기 중이든 진행 중이든 버림
-const aiWaiting = []; // { key, priority: 'current' | 'next', task(signal), resolve, reject }
-let aiRunningJob = null;
-
-function pumpAiQueue() {
-    if (aiRunningJob || aiWaiting.length === 0) return;
-    const job = aiWaiting.shift();
-    job.controller = new AbortController();
-    aiRunningJob = job;
-    job.task(job.controller.signal).then(job.resolve, e => {
-        if (job.dropped) return job.resolve({ error: 'skipped' });
-        if (!job.preempted) return job.reject(e);
-        job.preempted = job.stopping = false;
-        aiWaiting.push(job); // 지금 곡이 끝나면 다시 시도
-    }).finally(() => { aiRunningJob = null; pumpAiQueue(); });
-}
-
-// 진행 중인 번역 멈추기: requeue면 나중에 다시, 아니면 버림
-function stopRunningAi(requeue, reason) {
-    const run = aiRunningJob;
-    if (!run || run.stopping) return;
-    console.log(`[가사 번역] ${requeue ? '⏸️' : '⏹️'} ${reason}`);
-    run.stopping = true;
-    if (requeue) run.preempted = true; else run.dropped = true;
-    run.controller.abort();
-}
-
-function dropAiWaiting(shouldDrop) {
-    for (let i = aiWaiting.length - 1; i >= 0; i--) {
-        if (shouldDrop(aiWaiting[i])) aiWaiting.splice(i, 1)[0].resolve({ error: 'skipped' });
-    }
-}
-
-// 지금 곡(key)이 정해지면 그 곡 기준으로 정리
-function makeRoomForCurrent(key) {
-    dropAiWaiting(j => j.priority === 'current' && j.key !== key);
-    const run = aiRunningJob;
-    if (!run || run.key === key) return;
-    if (run.priority === 'current') stopRunningAi(false, '다른 곡을 골라 이전 곡 번역을 그만두고 새 곡부터 번역');
-    else stopRunningAi(true, '다음 곡 번역을 잠시 멈추고 지금 곡부터 번역');
-}
-
-// 다음 곡(key)이 정해지면 이전 다음 곡 번역은 필요 없음
-function makeRoomForNext(key) {
-    dropAiWaiting(j => j.priority === 'next' && j.key !== key);
-    if (aiRunningJob?.priority === 'next' && aiRunningJob.key !== key) stopRunningAi(false, '다음 곡이 바뀌어 이전 다음 곡 번역을 그만둠');
-}
-
-function enqueueAi(key, priority, task) {
-    return new Promise((resolve, reject) => {
-        priority === 'current' ? makeRoomForCurrent(key) : makeRoomForNext(key);
-        const job = { key, priority, task, resolve, reject };
-        priority === 'current' ? aiWaiting.unshift(job) : aiWaiting.push(job);
-        pumpAiQueue();
-    });
-}
-
-// 미리 번역하려고 줄 서 있거나 번역 중이던 곡이 지금 곡이 되면 맨 앞으로 올림
-function promoteAiWaiting(key) {
-    makeRoomForCurrent(key);
-    if (aiRunningJob?.key === key) { aiRunningJob.priority = 'current'; return; } // 이미 번역 중이면 그대로 둠
-    const i = aiWaiting.findIndex(j => j.key === key);
-    if (i < 0) return;
-    const [job] = aiWaiting.splice(i, 1);
-    job.priority = 'current';
-    aiWaiting.unshift(job);
-}
-
-let nvidiaKeyPromise = null;
-// Dock/Finder에서 켠 앱은 ~/.zshrc의 환경 변수를 물려받지 못하므로, 없으면 셸에서 한 번 읽어 옴
-function getNvidiaKey() {
-    if (process.env.NVIDIA_API_KEY) return Promise.resolve(process.env.NVIDIA_API_KEY);
-    if (!nvidiaKeyPromise) {
-        nvidiaKeyPromise = new Promise(resolve => {
-            if (process.platform === 'win32') return resolve('');
-            execFile(process.env.SHELL || '/bin/zsh', ['-ic', 'printf %s "$NVIDIA_API_KEY"'], { timeout: 5000 }, (err, stdout) => {
-                resolve(((stdout || '').match(/nvapi-[\w-]+/) || [''])[0]);
-            });
-        });
-    }
-    return nvidiaKeyPromise;
-}
-
-const AI_TRANSLATE_PROMPT = `너는 일본어·영어·중국어 등 외국어 노래 가사를 한국어로 옮기는 전문 가사 번역가다.
-
-[작업]
-사용자가 "번호|원문" 형식으로 노래 가사 전체를 준다. 각 줄을 한국어로 번역해 "번호|한국어 번역" 형식으로만 답한다.
-
-[규칙]
-1. 번역은 반드시 자연스러운 한국어(한글)로 쓴다. 영어로 번역하지 않는다.
-2. 원문을 다시 적지 않는다. 따옴표, 괄호 설명, 발음 표기, 머리말이나 맺음말을 붙이지 않는다.
-3. 곡 전체를 먼저 읽고 화자·상황·감정을 파악한 뒤, 직역보다 의미와 정서가 살아 있는 표현으로 옮긴다.
-4. 말투와 어미(반말/존댓말)는 곡 전체에서 하나로 통일한다. 화자가 혼잣말하거나 상대에게 말을 거는 노래는 대체로 반말이 자연스럽다.
-5. 원문에 없는 내용을 덧붙이지 않는다. 한 문장이 여러 줄에 걸쳐 끊겨 있어도 각 줄에는 그 줄에 해당하는 내용만 옮긴다.
-6. 이미 한국어인 줄은 그대로 쓴다. oh, yeah 같은 짧은 감탄사와 고유명사는 그대로 두거나 소리대로 적는다.
-7. 입력의 모든 번호에 대해 한 줄씩 답한다. 줄을 합치거나 나누거나 빠뜨리지 않는다.
-
-[예시]
-입력:
-1|君の声が聞こえた気がして
-2|振り返っても誰もいない
-3|I just can't let you go
-출력:
-1|네 목소리가 들린 것 같아서
-2|돌아봐도 아무도 없어
-3|도저히 너를 놓을 수가 없어`;
-
-// 답을 조금씩 받아 오며(stream) 모음. 일정 시간 아무것도 오지 않을 때만 실패로 봄
-async function streamNvidiaChat(key, body, signal) {
-    const controller = new AbortController();
-    // 지금 곡 요청이 와서 멈추는 경우 (preemptRunningNext)
-    const onStop = () => controller.abort();
-    if (signal?.aborted) throw new Error('preempted');
-    signal?.addEventListener('abort', onStop);
-    let idleTimer = null;
-    const arm = (ms) => { clearTimeout(idleTimer); idleTimer = setTimeout(() => controller.abort(), ms); };
-    arm(AI_FIRST_TOKEN_TIMEOUT_MS);
-    try {
-        const res = await axios.post(NVIDIA_CHAT_URL, { ...body, stream: true }, {
-            headers: { Authorization: `Bearer ${key}` }, responseType: 'stream', signal: controller.signal,
-        });
-        let content = '', reasoning = '', finish = '', other = '', buf = '';
-        for await (const chunk of res.data) {
-            arm(AI_IDLE_TIMEOUT_MS);
-            buf += chunk.toString();
-            let nl;
-            while ((nl = buf.indexOf('\n')) >= 0) {
-                const line = buf.slice(0, nl).trim();
-                buf = buf.slice(nl + 1);
-                if (!line || line.includes('[DONE]')) continue;
-                if (!line.startsWith('data:')) { other += line + ' '; continue; }
-                try {
-                    const ev = JSON.parse(line.slice(5));
-                    const choice = ev.choices?.[0];
-                    if (!choice) { other += line.slice(5, 300) + ' '; continue; } // 오류 등 답이 아닌 내용
-                    content += choice.delta?.content || '';
-                    reasoning += choice.delta?.reasoning_content || choice.delta?.reasoning || '';
-                    if (choice.finish_reason) finish = choice.finish_reason;
-                } catch (e) { other += line.slice(0, 300) + ' '; }
-            }
-        }
-        // 생각 과정을 끄라고 했는데도 답을 생각 칸(reasoning)에만 적어 보내는 경우가 있어 그쪽도 사용
-        if (!content.trim() && reasoning.trim()) {
-            console.log(`[가사 번역] 답이 생각 칸에만 와서 그쪽을 사용 (${reasoning.length}자)`);
-            content = reasoning;
-        }
-        if (!content.trim()) {
-            console.log(`[가사 번역] 빈 답 — 종료 이유: ${finish || '없음'}, 생각 ${reasoning.length}자, 그 외: ${other.slice(0, 300) || '없음'}`);
-            // 답 대신 오류만 온 경우 (예: {"error":{"code":500}}) → 서버 오류로 처리해 다른 모델로 다시 시도
-            const code = Number(other.match(/"code"\s*:\s*(\d{3})/)?.[1]);
-            if (code) throw Object.assign(new Error(`서버 오류 ${code}`), { response: { status: code } });
-        }
-        return content;
-    } catch (e) {
-        if (signal?.aborted) throw new Error('preempted');
-        if (controller.signal.aborted) throw new Error('응답 없음 (무료 서버 대기 초과)');
-        throw e;
-    } finally {
-        clearTimeout(idleTimer);
-        signal?.removeEventListener('abort', onStop);
-    }
-}
-
-// 모델 답에서 "번호|번역" 줄을 골라냄. 모델이 형식을 조금씩 바꿔 쓰는 경우도 받아 줌
-//   전각 숫자·구분자(１｜), "1. ", "1: ", "1) ", 목록 기호(- 1|), 굵은 글씨(**1**|), 코드 블록(```)
-//   "번호|원문|번역"처럼 원문을 같이 적은 경우는 마지막 칸만 사용
-function parseNumberedLines(content, originals) {
-    const byNumber = new Map();
-    const text = content
-        .replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0) - 0xFEE0))
-        .replace(/```[a-z]*/gi, '')
-        .replace(/\*\*/g, '');
-    for (const row of text.split('\n')) {
-        const m = row.match(/^\s*(?:[-*•]\s*)?(\d+)\s*(?:[|｜:：)）、]|\.(?!\d))\s*(.*)$/);
-        if (!m) continue;
-        const n = Number(m[1]);
-        let tr = m[2].trim();
-        const cells = tr.split(/\s*[|｜]\s*/);
-        if (cells.length >= 2 && cells[0] === (originals[n - 1] || '').trim()) tr = cells[cells.length - 1];
-        if (tr && !byNumber.has(n)) byNumber.set(n, tr);
-    }
-    return byNumber;
-}
-
-async function aiTranslateLines(lines, title, artist, model = NVIDIA_MODELS[0], signal) {
-    const key = await getNvidiaKey();
-    if (!key) return { error: 'no_credentials' };
-    // 무료 서버는 답이 오기까지 1~2분 걸릴 수 있어, 요청을 보냈다는 것부터 남김
-    console.log(`[가사 번역] ⏳ 문맥 번역 요청 → ${model.split('/')[1]} (${title})${aiWaiting.length ? ` · 뒤에 ${aiWaiting.length}곡 대기` : ''}`);
-    // 글자가 있는 줄만 번호를 붙여 보냄 (♪, 빈 줄 제외). 반복되는 후렴도 문맥을 위해 그대로 보냄
-    const sent = lines.map((line, i) => ({ line, i })).filter(({ line }) => HAS_LETTER.test(line));
-    const numbered = sent.map(({ line }, n) => `${n + 1}|${line}`).join('\n');
-    const content = (await streamNvidiaChat(key, {
-        model,
-        messages: [
-            { role: 'system', content: AI_TRANSLATE_PROMPT },
-            { role: 'user', content: `곡: ${title || '(제목 모름)'} - ${artist || '(가수 모름)'}\n\n${numbered}` },
-        ],
-        temperature: 0.3,
-        max_tokens: 8192,
-        // 생각 과정 없이 바로 답하게 해서 빠르게 (모델마다 쓰는 이름이 달라 둘 다 보냄)
-        chat_template_kwargs: { thinking: false, enable_thinking: false },
-    }, signal)).replace(/<think>[\s\S]*?<\/think>/g, '');
-    const byNumber = parseNumberedLines(content, sent.map(({ line }) => line));
-    // 줄이 너무 많이 빠졌으면 번호가 어긋났을 수 있으므로 쓰지 않음 (한 번 다시 요청하도록 오류로 던짐)
-    if (byNumber.size < sent.length * 0.8) {
-        console.log(`[가사 번역] 형식이 맞지 않는 답 (${byNumber.size}/${sent.length}줄 인식): ${content.slice(0, 200).replace(/\n/g, ' ⏎ ')}`);
-        throw new Error('bad_output');
-    }
-    // 번역답지 않은 줄은 버림: 한글이 없는 줄(영어로 번역 등), 원문을 다시 적은 줄 (예: '過ぎてゆくんだ今日も - "Today too passes by"')
-    const translations = lines.map(() => '');
-    let foreignLines = 0, goodLines = 0;
-    sent.forEach(({ line, i }, n) => {
-        const original = line.trim();
-        if (/[가-힣]/.test(original)) return; // 한국어 줄은 번역 줄을 붙이지 않음
-        foreignLines++;
-        const tr = (byNumber.get(n + 1) || '').replace(/^["'“‘「]+|["'”’」]+$/g, '').trim();
-        if (!tr || !/[가-힣]/.test(tr) || tr.includes(original)) return;
-        translations[i] = tr;
-        goodLines++;
-    });
-    if (foreignLines > 0 && goodLines < foreignLines * 0.7) {
-        console.log(`[가사 번역] 한국어 번역이 아닌 답 (${goodLines}/${foreignLines}줄만 사용 가능): ${content.slice(0, 200).replace(/\n/g, ' ⏎ ')}`);
-        throw new Error('bad_output');
-    }
-    return { translations };
-}
-
-app.post('/translate-ai', async (req, res) => {
-    const lines = Array.isArray(req.body?.lines) ? req.body.lines.map(l => String(l ?? '')) : [];
-    if (lines.length === 0) return res.json({ translations: [] });
-    const cacheKey = lines.join('\n');
-    if (aiTranslationCache.has(cacheKey)) return res.json(aiTranslationCache.get(cacheKey));
-    if (isKoreanLyrics(lines)) return res.json({ skip: true });
-
-    const priority = req.body.priority === 'next' ? 'next' : 'current';
-    if (aiTranslationPending.has(cacheKey) && priority === 'current') promoteAiWaiting(cacheKey);
-    if (!aiTranslationPending.has(cacheKey)) {
-        const t0 = Date.now();
-        // 서버가 바쁘거나(429/5xx) 응답이 끊기면 한 번만 다시 시도
-        const job = enqueueAi(cacheKey, priority, (signal) => {
-            const attempt = (model) => aiTranslateLines(lines, req.body.title, req.body.artist, model, signal);
-            return attempt(NVIDIA_MODELS[0]).catch(async e => {
-                // 형식이 깨진 답(bad_output)·연결 끊김·서버 과부하는 한 번 더 시도 (지금 곡 때문에 멈춘 경우는 제외)
-                if (signal.aborted || (e.response && e.response.status < 429)) throw e;
-                console.log(`[가사 번역] 문맥 번역 재시도 → ${NVIDIA_MODELS[1]} (${req.body.title}): ${e.response?.status || e.message}`);
-                await new Promise(r => setTimeout(r, AI_RETRY_DELAY_MS));
-                if (signal.aborted) throw new Error('preempted');
-                return attempt(NVIDIA_MODELS[1]);
-            });
-        })
-            .then(body => {
-                if (body.translations) {
-                    cacheSet(aiTranslationCache, cacheKey, body);
-                    console.log(`[가사 번역] ✨ ${priority === 'next' ? '⏭️ 다음 곡 ' : ''}문맥 번역 완료 (${req.body.title}) ${Date.now() - t0}ms`);
-                } else if (body.error !== 'no_credentials' && body.error !== 'skipped') {
-                    console.log(`[가사 번역] 문맥 번역 실패: ${body.error}`);
-                }
-                return body;
-            })
-            .catch(e => {
-                console.log(`[가사 번역] 문맥 번역 실패: ${e.response?.status || e.message}`);
-                return { error: e.response?.status === 429 ? 'rate_limited' : 'failed' };
-            })
-            .finally(() => aiTranslationPending.delete(cacheKey));
-        aiTranslationPending.set(cacheKey, job);
-    }
-    res.json(await aiTranslationPending.get(cacheKey));
 });
 
 // ─── 오디오 비주얼라이저 릴레이 ───────────────────────────

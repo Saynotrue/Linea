@@ -15,36 +15,63 @@ const fs = require('fs');
     }
 }
 
-// ─── NVIDIA API 키 (AI 가사 번역용) ─────────────────────
-// 설정 창에서 입력한 키를 이 컴퓨터의 앱 데이터 폴더에 암호화해 저장 (macOS 키체인 / Windows DPAPI)
-// 서버(server.js)는 같은 프로세스에서 process.env.NVIDIA_API_KEY를 읽음. 설정 키 > 실행 시 환경 변수 > 셸 설정(~/.zshrc) 순
-const launchEnvNvidiaKey = process.env.NVIDIA_API_KEY || '';
-let savedNvidiaKey = '';
-const nvidiaKeyFile = () => path.join(app.getPath('userData'), 'nvidia-key.bin');
-
-function applyNvidiaKey() {
-    const key = savedNvidiaKey || launchEnvNvidiaKey;
-    if (key) process.env.NVIDIA_API_KEY = key;
-    else delete process.env.NVIDIA_API_KEY;
+// ─── Azure Translator 키·지역 (가사 번역용) ─────────────────
+// 구글 번역 대신 쓰는 번역 엔진 (곡 전체 문맥을 보고 번역, 무료 매월 200만 자). 설정 창에서 입력한 키를 이 컴퓨터의 앱 데이터 폴더에 암호화해 저장 (macOS 키체인 / Windows DPAPI)
+// 서버(server.js)는 process.env.AZURE_TRANSLATOR_KEY / AZURE_TRANSLATOR_REGION을 읽음. 설정 키 > 실행 시 환경 변수 > 셸 설정(~/.zshrc) 순
+const launchEnvAzure = { key: process.env.AZURE_TRANSLATOR_KEY || '', region: process.env.AZURE_TRANSLATOR_REGION || '' };
+let savedAzure = { key: '', region: '' };
+const azureKeyFile = () => path.join(app.getPath('userData'), 'azure-translator.bin');
+function applyAzureKey() {
+    const creds = savedAzure.key ? savedAzure : launchEnvAzure;
+    if (creds.key) {
+        process.env.AZURE_TRANSLATOR_KEY = creds.key;
+        if (creds.region) process.env.AZURE_TRANSLATOR_REGION = creds.region;
+        else delete process.env.AZURE_TRANSLATOR_REGION;
+    } else {
+        delete process.env.AZURE_TRANSLATOR_KEY;
+        delete process.env.AZURE_TRANSLATOR_REGION;
+    }
 }
-
-function loadNvidiaKey() {
+function loadAzureKey() {
     try {
-        const buf = fs.readFileSync(nvidiaKeyFile());
-        savedNvidiaKey = safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(buf) : buf.toString('utf8');
-    } catch (e) { savedNvidiaKey = ''; }
-    applyNvidiaKey();
+        const buf = fs.readFileSync(azureKeyFile());
+        const parsed = JSON.parse(safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(buf) : buf.toString('utf8'));
+        savedAzure = { key: String(parsed.key || ''), region: String(parsed.region || '') };
+    } catch (e) { savedAzure = { key: '', region: '' }; }
+    // 예전에 쓰던 번역 키 파일(DeepL)은 더 쓰지 않으므로 지움
+    try { fs.rmSync(path.join(app.getPath('userData'), 'deepl-key.bin'), { force: true }); } catch (e) { }
+    applyAzureKey();
 }
-
-// 화면에는 앞 6자(nvapi-)와 끝 4자만 보여줌
-function nvidiaKeyStatus() {
-    const mask = (k) => `${k.slice(0, 6)}••••${k.slice(-4)}`;
-    if (savedNvidiaKey) return { set: true, source: 'settings', masked: mask(savedNvidiaKey) };
-    if (launchEnvNvidiaKey) return { set: true, source: 'env', masked: mask(launchEnvNvidiaKey) };
+// 화면에는 키의 앞 4자와 끝 4자, 지역만 보여줌
+function azureKeyStatus() {
+    const mask = (k) => `${k.slice(0, 4)}••••${k.slice(-4)}`;
+    if (savedAzure.key) return { set: true, source: 'settings', masked: mask(savedAzure.key), region: savedAzure.region };
+    if (launchEnvAzure.key) return { set: true, source: 'env', masked: mask(launchEnvAzure.key), region: launchEnvAzure.region };
     return { set: false };
 }
-
-ipcMain.handle('get-nvidia-key-status', () => nvidiaKeyStatus());
+ipcMain.handle('get-azure-key-status', () => azureKeyStatus());
+ipcMain.handle('set-azure-key', (event, input) => {
+    const key = String(input?.key || '').trim();
+    const region = String(input?.region || '').trim().toLowerCase().replace(/\s+/g, '');
+    // Azure 키: 영문·숫자 32자(예전 키) 또는 84자 / 지역: 영문 소문자·숫자 (예: koreacentral). 전역 리소스면 지역 없음
+    if (key && !/^[0-9A-Za-z]{32,100}$/.test(key)) return { ...azureKeyStatus(), error: 'format' };
+    if (key && region && !/^[a-z0-9]{2,40}$/.test(region)) return { ...azureKeyStatus(), error: 'region' };
+    try {
+        if (key) {
+            const text = JSON.stringify({ key, region: region === 'global' ? '' : region });
+            const data = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(text) : Buffer.from(text, 'utf8');
+            fs.mkdirSync(path.dirname(azureKeyFile()), { recursive: true });
+            fs.writeFileSync(azureKeyFile(), data, { mode: 0o600 });
+        } else {
+            fs.rmSync(azureKeyFile(), { force: true });
+        }
+        savedAzure = key ? { key, region: region === 'global' ? '' : region } : { key: '', region: '' };
+        applyAzureKey();
+        return azureKeyStatus();
+    } catch (e) {
+        return { ...azureKeyStatus(), error: 'save' };
+    }
+});
 
 // 🎬 영상 배경(블러): 위젯 화면에서 앨범 아트 자리 영상 부분만 캡처해 아주 작게 줄여 돌려줌 (renderer/app.js ArtVideo)
 //   같은 영상을 하나 더 재생해 흐리게 깔면, 화면에 재생 중인 영상이 2개가 되어 맥의 Chromium이 화면 갱신을 30fps로 묶음
@@ -61,25 +88,6 @@ ipcMain.handle('capture-art-video', async (event, rect) => {
     }
 });
 
-ipcMain.handle('set-nvidia-key', (event, input) => {
-    const key = String(input || '').trim();
-    if (key && !/^nvapi-[\w-]{20,}$/.test(key)) return { ...nvidiaKeyStatus(), error: 'format' };
-    try {
-        if (key) {
-            const data = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(key) : Buffer.from(key, 'utf8');
-            fs.mkdirSync(path.dirname(nvidiaKeyFile()), { recursive: true });
-            fs.writeFileSync(nvidiaKeyFile(), data, { mode: 0o600 });
-        } else {
-            fs.rmSync(nvidiaKeyFile(), { force: true });
-        }
-        savedNvidiaKey = key;
-        applyNvidiaKey();
-        return nvidiaKeyStatus();
-    } catch (e) {
-        return { ...nvidiaKeyStatus(), error: 'save' };
-    }
-});
-
 // ─── 전역 창 참조 및 상태 ────────────────────────────────
 let win;
 let tray = null;
@@ -88,9 +96,11 @@ let currentWidgetStyle = 'eq';
 
 // ─── 2. 앱 실행 및 메인 윈도우 생성 ───────────────────────
 app.whenReady().then(() => {
-    // 저장해 둔 NVIDIA API 키를 서버가 읽을 수 있게 먼저 불러옴
-    loadNvidiaKey();
+    // 저장해 둔 Azure 번역 키를 서버가 읽을 수 있게 먼저 불러옴
+    loadAzureKey();
     // 통합 서버 구동
+    // 번역한 곡 저장 파일(translations.json) 위치
+    process.env.LINEA_DATA_DIR = app.getPath('userData');
     require('./server.js');
 
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;

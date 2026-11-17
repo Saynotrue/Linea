@@ -887,7 +887,7 @@ img {
     pointer-events: none;
 }
 
-/* 설정: NVIDIA API 키 입력 */
+/* 설정: 번역 키 입력 */
 .key-status {
     padding-top: 10px;
     font-size: 10px;
@@ -913,6 +913,10 @@ img {
     -webkit-app-region: no-drag;
     -webkit-user-select: text;
     user-select: text;
+}
+
+.key-row input:last-child {
+    border-right: none; /* 버튼 없이 입력란만 있는 줄 */
 }
 
 .key-row input::placeholder {
@@ -1149,27 +1153,6 @@ body.fullscreen-mode #btn-translate {
 }
 
 /* 번역 중: 버튼이 천천히 깜빡임 */
-/* 문맥 번역(AI) 완료: 아이콘은 그대로 두고 "가"의 ㅏ 아랫부분을 지운 뒤 그 자리에 "AI"를 겹쳐 표시
-   (지우는 부분·글씨는 app.js의 아이콘 SVG 안에 있음: .tr-ai-cut / .tr-ai-label) */
-#btn-translate .tr-ai-cut {
-    opacity: 0;
-    transition: opacity 0.25s ease;
-}
-
-#btn-translate .tr-ai-label {
-    opacity: 0;
-    transform: scale(0.5);
-    transform-box: fill-box;
-    transform-origin: center;
-    transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1);
-}
-
-#btn-translate.ai .tr-ai-cut,
-#btn-translate.ai .tr-ai-label {
-    opacity: 1;
-    transform: none;
-}
-
 body.fullscreen-mode #btn-translate.loading {
     animation: translate-pulse 1.2s ease-in-out infinite;
 }
@@ -1717,4 +1700,30 @@ body.fullscreen-mode.art-video-loading.art-video-on.art-video-blur.art-video-bg-
 
 body.fullscreen-mode.idle #art-video-shield {
     cursor: none;
+}
+
+/* 설정 창: Azure 번역 이번 달 사용량 (막대 + 글자) */
+.translate-usage {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.translate-usage .usage-bar {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+}
+
+.translate-usage .usage-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--highlight-color, #e33);
+}
+
+.translate-usage.warn {
+    color: #ffb36b;
 }
