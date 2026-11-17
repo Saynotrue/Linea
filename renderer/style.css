@@ -584,9 +584,23 @@ img {
     opacity: 1;
 }
 
+/* 전체화면 위에 띄운 설정 창: 뒤 화면을 살짝 어둡게 (바깥을 누르면 닫힘) */
+#settings-modal {
+    transition: background 0.3s ease;
+}
+
+#settings-modal.over-fullscreen.show {
+    background: rgba(0, 0, 0, 0.35);
+}
+
+#settings-modal.over-fullscreen.closing {
+    background: transparent;
+}
+
 #settings-panel {
-    width: 300px;
-    max-height: calc(100vh - 80px);
+    width: 340px;
+    /* 한 칸 세로 배치, 너무 길면 위아래 스크롤 (화면이 커도 이 높이까지만) */
+    max-height: min(600px, calc(100vh - 80px));
     overflow-y: auto;
     overflow-x: hidden;
     background: rgba(13, 13, 13, 0.97);
@@ -604,8 +618,23 @@ img {
     transition: transform 0.52s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease;
 }
 
+/* 스크롤할 수 있다는 걸 알 수 있게 얇은 스크롤 막대 */
 #settings-panel::-webkit-scrollbar {
-    display: none;
+    width: 6px;
+}
+
+#settings-panel::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.14);
+    border-radius: 3px;
+}
+
+#settings-panel::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.24);
+}
+
+#settings-panel::-webkit-scrollbar-track {
+    background: transparent;
+    margin: 18px 0;
 }
 
 #settings-modal.show #settings-panel {
@@ -619,11 +648,24 @@ img {
     transition: transform 0.32s cubic-bezier(0.4, 0, 1, 1), opacity 0.2s ease;
 }
 
+/* 머리글(Linea · 닫기)은 스크롤해도 맨 위에 고정 (패널 안쪽 여백 20px만큼 끌어올려 위 가장자리에 붙임) */
 #settings-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding-bottom: 16px;
+    position: sticky;
+    top: -20px;
+    z-index: 2;
+    margin: -20px -20px 0;
+    padding: 20px 20px 16px;
+    background: rgb(13, 13, 13);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 20px 20px 0 0;
+}
+
+/* 머리글 아래 구분선은 머리글 테두리로 대신함 */
+#settings-header + .s-divider {
+    display: none;
 }
 
 .header-brand {
@@ -632,18 +674,27 @@ img {
     gap: 10px;
 }
 
+/* 앱 아이콘: 흰 둥근 사각형 위 물결 문양 (앱 아이콘과 같은 모양) */
 .brand-icon {
     width: 34px;
     height: 34px;
-    background: linear-gradient(135deg, var(--highlight-color) 0%, #000 100%) !important;
-    box-shadow: 0 4px 14px var(--highlight-bg) !important;
-    border-radius: 10px;
+    background: linear-gradient(180deg, #ffffff 0%, #ecebf2 100%) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 0 0 0.5px rgba(0, 0, 0, 0.08) !important;
+    border-radius: 9px;
+    padding: 3px;
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 17px;
     flex-shrink: 0;
     color: #fff;
+}
+
+.brand-icon img {
+    width: 100%;
+    height: 100%;
+    display: block;
 }
 
 .brand-info {
@@ -692,9 +743,28 @@ img {
     gap: 10px;
 }
 
-.settings-section:first-of-type {
+#opacity-section {
     padding-bottom: 4px !important;
     margin-bottom: 0 !important;
+}
+
+/* 설정 묶음: 화면 / 가사·동작 (한 칸 세로 배치, 묶음 사이에 구분선) */
+.settings-grid {
+    padding-top: 6px;
+}
+
+.settings-col + .settings-col {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    margin: 8px -20px 0;
+    padding: 6px 20px 0;
+}
+
+.settings-col-title {
+    padding: 10px 0 2px;
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: -0.1px;
 }
 
 .settings-row-between {
@@ -1571,9 +1641,8 @@ body.fullscreen-mode.art-video-loading.art-video-on:not(.show-lyrics) #art-video
     left: calc(50vw - var(--video-w) / 2);
 }
 
-/* 영상을 볼 때의 배경: 같은 영상을 작게(356×200) 띄워 저화질로 받고, 화면을 덮을 만큼 확대한 뒤 흐리게
-   (유튜브는 200px보다 작은 플레이어의 재생을 거부할 수 있어 높이 200. 확대 배율 --art-bg-scale은 app.js가 창 크기로 계산)
-   🚨 앨범 아트 자리 영상과 같은 이유로 숨김은 투명도로만 (visibility/display로 숨긴 채 불러오면 그려지지 않음) */
+/* 영상을 볼 때의 배경: 재생 중인 영상을 1초에 약 10번 캡처해(app.js ArtVideo) 작은 캔버스 안에서 흐리게 그리고 화면 가득 늘림
+   (같은 영상을 하나 더 재생하면 재생 중인 영상이 2개가 되어 화면 갱신이 30fps로 묶이고 가사 애니메이션이 끊겨서 캡처로 바꿈) */
 #art-video-bg {
     display: none;
 }
@@ -1587,28 +1656,21 @@ body.fullscreen-mode.art-video-loading #art-video-bg {
     background: #000;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.9s ease; /* app.js FADE_OUT_MS와 같게 (사라진 뒤에 영상을 정리) */
+    transition: opacity 0.9s ease; /* app.js FADE_OUT_MS와 같게 (사라진 뒤에 정리) */
 }
 
-/* 설정 '영상 배경'이 블러(art-video-blur)이고 배경 영상이 재생되기 시작한 뒤(art-video-bg-ready)에만 드러냄
+/* 설정 '영상 배경'이 블러(art-video-blur)이고 첫 캡처를 그린 뒤(art-video-bg-ready)에만 드러냄
    (앨범아트 색이면 흐린 영상 대신 원래 물감 배경 그대로) */
 body.fullscreen-mode.art-video-loading.art-video-on.art-video-blur.art-video-bg-ready #art-video-bg {
     opacity: 1;
 }
 
-#art-video-bg-frame {
+/* 흐림·어둡게는 app.js가 작은 캔버스 안에서 처리 (화면 크기에 CSS blur를 걸면 GPU 부담이 큼). 흐린 가장자리가 보이지 않게 살짝 크게 */
+#art-video-bg-canvas {
     position: absolute;
-    left: 50%;
-    top: 50%;
-    /* 원본 비율의 작은 플레이어 (app.js sizeBackground가 크기·배율 계산) → 배경에 검은 띠가 번지지 않음 */
-    width: var(--art-bg-w, 356px);
-    height: var(--art-bg-h, 200px);
-    border: 0;
-    pointer-events: none;
-    /* 흐림은 확대 전 크기 기준이라 실제로는 배율만큼 커짐 (6px × 약 6배 ≈ 36px) */
-    /* 영상 모드에서는 글자가 항상 흰색이므로 밝은 영상(하얀 배경 장면 등)에서도 읽히게 어둡게 */
-    filter: blur(6px) saturate(1.3) brightness(0.6);
-    transform: translate(-50%, -50%) scale(var(--art-bg-scale, 8));
+    inset: -8%;
+    width: 116%;
+    height: 116%;
 }
 
 /* 영상 모드의 글자 색: 흐린 영상 배경일 때는 앨범 아트 색으로 정한 색(밝은 앨범이면 검은 글자) 대신 항상 흰 글자 (어둡게 흐린 영상 배경 위)

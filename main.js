@@ -46,6 +46,21 @@ function nvidiaKeyStatus() {
 
 ipcMain.handle('get-nvidia-key-status', () => nvidiaKeyStatus());
 
+// 🎬 영상 배경(블러): 위젯 화면에서 앨범 아트 자리 영상 부분만 캡처해 아주 작게 줄여 돌려줌 (renderer/app.js ArtVideo)
+//   같은 영상을 하나 더 재생해 흐리게 깔면, 화면에 재생 중인 영상이 2개가 되어 맥의 Chromium이 화면 갱신을 30fps로 묶음
+//   (가사 애니메이션이 끊김). 재생 중인 영상을 1초에 여러 번 찍어 배경으로 씀. 크게 흐리므로 작은 이미지로 충분
+ipcMain.handle('capture-art-video', async (event, rect) => {
+    const sender = event.sender;
+    if (!rect || rect.width < 4 || rect.height < 4 || sender.isDestroyed()) return null;
+    try {
+        const image = await sender.capturePage({ x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) });
+        if (image.isEmpty()) return null;
+        return image.resize({ width: 128, quality: 'good' }).toDataURL(); // renderer/app.js BG_CANVAS_W와 같게
+    } catch (e) {
+        return null;
+    }
+});
+
 ipcMain.handle('set-nvidia-key', (event, input) => {
     const key = String(input || '').trim();
     if (key && !/^nvapi-[\w-]{20,}$/.test(key)) return { ...nvidiaKeyStatus(), error: 'format' };
@@ -200,6 +215,13 @@ app.whenReady().then(() => {
                 click: () => {
                     if (!win.isVisible()) win.show();
                     win.focus();
+                    // 전체화면이면 그대로 둔 채 위에 설정 창을 띄움 (닫으면 전체화면 그대로. 바·LP로 바뀌지 않게)
+                    if (isWindowFullScreen()) {
+                        settingsOverFullscreen = true;
+                        win.webContents.send('open-settings', { overFullscreen: true });
+                        return;
+                    }
+                    settingsOverFullscreen = false;
                     // 강제로 최상단으로 한 번 끌어올린 뒤, 설정창 조작을 위해 항상 위 해제
                     win.setAlwaysOnTop(true, 'screen-saver');
                     win.setAlwaysOnTop(false);
@@ -271,6 +293,11 @@ app.whenReady().then(() => {
     });
 
     ipcMain.on('close-settings', () => {
+        // 전체화면 위에 띄운 설정 창이면 창은 그대로 (전체화면 유지)
+        if (settingsOverFullscreen) {
+            settingsOverFullscreen = false;
+            return;
+        }
         setWindowMode(currentWidgetStyle);
         // 🚨 설정 창이 닫히고 위젯 모드로 돌아오면 무조건 항상 위(Always On Top) 활성화
         if (win && !win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver');
@@ -284,6 +311,8 @@ app.whenReady().then(() => {
 // 🚨 macOS는 '단순 전체화면'(simple fullscreen) 사용: 기본 전체화면은 노치 양옆(메뉴 막대 줄)을 검게 비워 두지만,
 //    단순 전체화면은 메뉴 막대·Dock을 숨기고 그 줄까지 창을 늘려 화면 전체를 채움 (별도 데스크탑 공간도 만들지 않음)
 const USE_SIMPLE_FULLSCREEN = process.platform === 'darwin';
+// 설정 창을 전체화면 위에 띄웠는지 (닫을 때 바·LP 크기로 되돌리지 않음)
+let settingsOverFullscreen = false;
 
 function isWindowFullScreen() {
     return USE_SIMPLE_FULLSCREEN ? win.isSimpleFullScreen() : win.isFullScreen();

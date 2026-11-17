@@ -1030,8 +1030,10 @@ app.post('/translate', async (req, res) => {
 // 키(NVIDIA_API_KEY)가 없거나 실패하면 구글 번역이 그대로 남음
 const { execFile } = require('child_process');
 const NVIDIA_CHAT_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
-// 첫 시도는 deepseek, 실패하면 다시 시도할 때 다른 모델 (무료 서버가 특정 곡에서 계속 내부 오류(500)를 내는 경우가 있음)
-const NVIDIA_MODELS = ['deepseek-ai/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash'];
+// 첫 시도는 GLM, 실패하면 다시 시도할 때 다른 모델 (무료 서버가 특정 곡에서 계속 내부 오류(500)를 내는 경우가 있음)
+//   NVIDIA가 무료 모델을 내리면 410(Gone)이 옴 → 목록(https://integrate.api.nvidia.com/v1/models)에 있는 모델로 바꿀 것
+//   (2026-11: deepseek-ai/deepseek-v4.1-flash가 내려가 410)
+const NVIDIA_MODELS = ['z-ai/glm-5.3-flash', 'mistralai/mistral-large-4-1t-a52b'];
 // 무료 서버는 대기 순번이 길고(수십 초) 가사가 길면 답을 쓰는 데도 오래 걸리므로, 전체 시간 대신
 // "아무 응답이 없는 시간"으로 끊음 (답을 조금씩 받아 오는 중이면 기다림)
 const AI_FIRST_TOKEN_TIMEOUT_MS = 150000; // 대기 순번 (첫 글자가 올 때까지)

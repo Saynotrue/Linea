@@ -12,9 +12,10 @@
     <canvas id="ambient-canvas"></canvas>
   </div>
 
-  <!-- 🎬 영상을 볼 때의 배경: 같은 영상을 작게(저화질) 띄워 화면 가득 확대하고 흐리게 (app.js ArtVideo) -->
+  <!-- 🎬 영상을 볼 때의 배경: 재생 중인 영상을 1초에 약 10번 캡처해, 작은 캔버스에 흐리게 그리고 화면 가득 늘림.
+       캡처 사이는 매 프레임 직전 캡처에서 새 캡처로 서서히 섞어 그림 (app.js ArtVideo) -->
   <div id="art-video-bg" aria-hidden="true">
-    <iframe id="art-video-bg-frame" title="배경 영상" tabindex="-1" allow="autoplay; encrypted-media"></iframe>
+    <canvas id="art-video-bg-canvas"></canvas>
   </div>
 
   <!-- 🎬 전체화면 앨범 아트 자리의 영상 (앨범 아트를 누르면 전환, app.js ArtVideo). 위의 투명 막이 클릭을 받아 다시 앨범 아트로 -->
@@ -107,7 +108,7 @@
 
       <div id="settings-header">
         <div class="header-brand">
-          <div class="brand-icon">♪</div>
+          <div class="brand-icon"><img src="linea-mark.svg" alt=""></div>
           <div class="brand-info">
             <span class="brand-name">Linea</span>
           </div>
@@ -116,6 +117,11 @@
       </div>
 
       <div class="s-divider"></div>
+
+      <!-- 두 칸 배치 (창이 좁으면 한 칸): 왼쪽 화면, 오른쪽 가사·동작 -->
+      <div class="settings-grid">
+      <div class="settings-col">
+      <div class="settings-col-title">화면</div>
 
       <div id="opacity-section" class="settings-section">
         <div class="settings-row-between">
@@ -160,6 +166,11 @@
         <div class="shortcut-hint">전체화면에서 앨범아트를 눌러 영상으로 볼 때의 배경 · 앨범아트 색이 더 가벼움</div>
       </div>
 
+      </div>
+
+      <div class="settings-col">
+      <div class="settings-col-title">가사 · 동작</div>
+
       <div class="settings-section">
         <div class="settings-label">가사 싱크 조절</div>
         <div class="stepper-row">
@@ -193,8 +204,6 @@
         <div class="shortcut-hint">build.nvidia.com에서 무료로 발급 · 이 컴퓨터에만 암호화해 저장 · 없으면 구글 번역만 사용</div>
       </div>
 
-      <div class="s-divider"></div>
-
       <div class="settings-section settings-row-between">
         <div class="settings-label">항상 위에 표시</div>
         <label class="toggle">
@@ -212,6 +221,9 @@
           <input id="shortcuts-toggle" type="checkbox">
           <span class="toggle-slider"></span>
         </label>
+      </div>
+
+      </div>
       </div>
 
     </div>

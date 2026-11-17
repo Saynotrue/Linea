@@ -521,16 +521,30 @@ function refitLyricLines() {
     LYRIC_SLOT_IDS.forEach(id => { const el = document.getElementById(id); if (el) fitLyricLine(el); });
 }
 
-// 전체화면 곡 제목은 아무리 길어도 한 줄: 곡 정보 폭을 넘으면 그만큼 글자 크기를 줄임
+// 전체화면 곡 제목: 곡 정보 폭을 넘으면 글자를 줄여 한 줄로. 단 원래 크기의 TITLE_MIN_RATIO까지만 줄이고,
+//   그보다 길면(유튜브 커버 영상 제목 등) 그 크기로 두 줄에 나눔. 두 줄도 넘치면 끝을 …로
+//   (끝없이 줄이면 긴 제목이 가사보다 훨씬 작은 글씨가 됨. 아래 버튼들은 곡 정보 높이(--ti-h)만큼 따라 내려감)
+const TITLE_MIN_RATIO = 0.75;
+const TITLE_WRAP_PROPS = ['font-size', 'white-space', 'display', 'overflow', '-webkit-line-clamp', '-webkit-box-orient', 'text-wrap', 'word-break', 'overflow-wrap'];
 function fitTitle() {
     const el = document.getElementById('title');
     if (!el) return;
-    el.style.removeProperty('font-size');
+    TITLE_WRAP_PROPS.forEach(p => el.style.removeProperty(p));
     if (!document.body.classList.contains('fullscreen-mode') || !el.clientWidth) return;
     const overflow = el.scrollWidth / el.clientWidth;
     if (overflow <= 1.001) return;
     const base = parseFloat(getComputedStyle(el).fontSize);
-    el.style.setProperty('font-size', `${Math.floor(base / overflow * 10) / 10}px`, 'important');
+    if (1 / overflow >= TITLE_MIN_RATIO) {
+        el.style.setProperty('font-size', `${Math.floor(base / overflow * 10) / 10}px`, 'important');
+        return;
+    }
+    const wrap = {
+        'font-size': `${Math.floor(base * TITLE_MIN_RATIO * 10) / 10}px`,
+        'white-space': 'normal', display: '-webkit-box', overflow: 'hidden',
+        '-webkit-line-clamp': '2', '-webkit-box-orient': 'vertical',
+        'text-wrap': 'balance', 'word-break': 'keep-all', 'overflow-wrap': 'anywhere',
+    };
+    for (const [k, v] of Object.entries(wrap)) el.style.setProperty(k, v, 'important');
 }
 
 function getLyricContext(progress) {
@@ -1117,7 +1131,8 @@ let idleTimer = null;
 function wakeFromIdle() {
     document.body.classList.remove('idle');
     clearTimeout(idleTimer);
-    if (isFullscreen) idleTimer = setTimeout(() => document.body.classList.add('idle'), IDLE_HIDE_MS);
+    // 설정 창을 보는 중에는 커서를 숨기지 않음
+    if (isFullscreen) idleTimer = setTimeout(() => { if (!settingsShown()) document.body.classList.add('idle'); }, IDLE_HIDE_MS);
 }
 ['mousemove', 'mousedown', 'wheel'].forEach(type => document.addEventListener(type, wakeFromIdle, { passive: true }));
 
@@ -1143,6 +1158,8 @@ const SEEK_STEP_MS = 5000;
 const isTypingTarget = (target) => !!target.closest?.('input, textarea, select');
 
 document.addEventListener('keydown', (e) => {
+    // 설정 창이 열려 있으면 Esc는 설정 창만 닫음 (전체화면은 그대로)
+    if (e.key === 'Escape' && settingsShown()) { closeSettingsModal(); return; }
     if (e.key === 'Escape' && isFullscreen) toggleFullscreen();
 
     if (e.code === 'Space' && !isTypingTarget(e.target)) {
@@ -1229,26 +1246,111 @@ const ArtVideo = (() => {
     let teardownTimer = null;
     let coverTimer = null;
     let pausedMs = null;       // 일시정지 중의 재생 위치 (일시정지 중에는 localProgress가 갱신되지 않음)
-    let mainTimeAt = 0;        // 앨범 아트 자리 영상이 마지막으로 실제 재생 위치를 알려 준 시각
     let videoRatio = 16 / 9;   // 영상 원본 비율 (유튜브 프레임 안의 영상 크기로 받음)
-    // 배경 영상이 앨범 아트 자리 영상과 0.25초 넘게 어긋나면 0.1초 앞으로(이동에 걸리는 시간만큼) 맞추되, 맞춘 뒤 2초 동안은 다시 맞추지 않음
-    //   (0.12초 기준으로 앞당김 없이 맞추면 이동하는 동안 또 늦어져 1초에 4번씩 이동 → 버퍼링이 반복돼 두 영상 모두 끊김)
-    const BG_SYNC = { tolerance: 0.25, lead: 0.1, minSeekGap: 2 };
     const blocked = new Set(); // 퍼가기 금지 등으로 재생할 수 없는 영상
 
-    // 앨범 아트 자리 영상(재생 시작·오류를 알려 줌) + 배경 영상(같은 영상을 흐리게, 소리·오류 무시)
+    // 앨범 아트 자리 영상 (재생 시작·오류·크기를 알려 줌)
     const frame = () => document.getElementById('art-video-frame');
-    const bgFrame = () => document.getElementById('art-video-bg-frame');
-    const allFrames = () => [frame(), bgFrame()];
-    // 설정 '영상 배경'이 블러일 때만 배경 영상을 띄움 (앨범아트 색이면 영상 하나만 재생)
+    // 설정 '영상 배경'이 블러일 때만 영상을 캡처해 흐린 배경을 그림 (앨범아트 색이면 물감 배경 그대로)
     const blurBackground = () => appConfig.videoBackground !== 'album';
-    const frames = () => blurBackground() ? allFrames() : [frame()];
 
-    // 배경 영상 페이지를 비움 (다운로드 중지)
+    // ── 흐린 영상 배경: 재생 중인 영상을 캡처해 그림 ──
+    //   같은 영상을 하나 더 재생해 흐리게 깔던 방식은 재생 중인 영상이 2개가 되어, 맥의 Chromium이 화면 갱신을 30fps로 묶었음
+    //   (가사 애니메이션 끊김. CSS 흐림·코덱·Chromium 설정으로는 풀리지 않음)
+    //   → 메인 프로세스가 화면에서 영상 부분만 캡처해 아주 작게 줄여 줌(main.js capture-art-video).
+    //     1초에 약 10번 찍고, 매 프레임 직전 캡처에서 새 캡처로 서서히 섞어 작은 캔버스에 흐리게 그린 뒤 CSS로 늘림
+    const CAPTURE_MS = 100;       // 캡처 간격 (찍는 데 걸린 시간을 빼고 다음 캡처를 예약)
+    const BLEND_MS = 90;          // 새 캡처로 넘어가는 시간 (캡처 간격보다 조금 짧게 → 다음 캡처가 오기 전에 다 넘어가 튀지 않음)
+    const CAPTURE_AFTER_MS = 650; // 영상이 나타난 뒤 첫 캡처까지 (영상이 나타나는 동안 찍으면 앨범 아트가 섞임, style.css 0.6초)
+    const BG_CANVAS_W = 128;      // 배경 캔버스 폭 (높이는 창 비율대로). 클수록 덜 흐림 (main.js 캡처 크기와 같게)
+    const BG_BLUR_PX = 2;         // 캔버스 안 흐림. 화면에서는 배율만큼 커짐 (128px 캔버스 → 약 12배, 2px ≈ 화면 24px)
+    let capturing = false;        // 캡처 반복 중
+    let captureTimer = null;
+    let blendFrame = null;
+    let shownAt = 0;
+    let prevShot = null, nextShot = null, nextAt = 0; // 섞는 중인 두 캡처와 새 캡처가 도착한 시각
+    const bgCanvas = () => document.getElementById('art-video-bg-canvas');
+
+    function startCapture() {
+        if (capturing || !blurBackground()) return;
+        capturing = true;
+        clearTimeout(captureTimer);
+        captureTimer = setTimeout(captureFrame, Math.max(0, CAPTURE_AFTER_MS - (performance.now() - shownAt)));
+    }
+    function stopCapture() {
+        capturing = false;
+        clearTimeout(captureTimer);
+        captureTimer = null;
+        cancelAnimationFrame(blendFrame);
+        blendFrame = null;
+    }
+
+    async function captureFrame() {
+        if (!capturing) return;
+        const started = performance.now();
+        const body = document.body.classList;
+        // 일시정지 중에는 화면이 그대로이므로 다시 찍지 않음 (첫 장은 찍음)
+        const skip = body.contains('art-video-bg-ready') && pausedMs !== null;
+        if (!skip && body.contains('art-video-on') && blurBackground()) {
+            const r = frame().getBoundingClientRect();
+            const inset = Math.min(r.width, r.height) * 0.04; // 둥근 모서리·가장자리 제외
+            try {
+                const url = await ipcRenderer.invoke('capture-art-video', { x: r.left + inset, y: r.top + inset, width: r.width - inset * 2, height: r.height - inset * 2 });
+                if (url && capturing) {
+                    const img = new Image();
+                    img.src = url;
+                    await img.decode();
+                    if (capturing) addShot(img);
+                }
+            } catch (e) { }
+        }
+        if (capturing) captureTimer = setTimeout(captureFrame, Math.max(0, CAPTURE_MS - (performance.now() - started)));
+    }
+
+    function addShot(img) {
+        prevShot = nextShot || img;
+        nextShot = img;
+        nextAt = performance.now();
+        if (!blendFrame) blendFrame = requestAnimationFrame(drawBackground);
+        if (!document.body.classList.contains('art-video-bg-ready')) {
+            document.body.classList.add('art-video-bg-ready');
+            scheduleCover();
+        }
+    }
+
+    // 작은 캔버스에 직전 캡처 → 새 캡처를 섞어 흐리게 그림. 섞기가 끝나면 다음 캡처가 올 때까지 쉼
+    function drawBackground() {
+        blendFrame = null;
+        const c = bgCanvas();
+        if (!c || !nextShot) return;
+        const w = BG_CANVAS_W, h = Math.max(1, Math.round(BG_CANVAS_W * innerHeight / innerWidth));
+        if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+        const ctx = c.getContext('2d');
+        const k = Math.min(1, (performance.now() - nextAt) / BLEND_MS);
+        // 작은 캔버스 안에서 흐리게 → 화면 크기로 늘리면 크게 흐린 것처럼 보임. 글자가 흰색이므로 어둡게
+        ctx.filter = `blur(${BG_BLUR_PX}px) saturate(1.3) brightness(0.6)`;
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+        const draw = (img, alpha) => {
+            // 화면을 덮도록(cover) + 흐린 가장자리가 캔버스 밖으로 나가게 조금 더 크게
+            const scale = Math.max(w / img.width, h / img.height) * 1.25;
+            const dw = img.width * scale, dh = img.height * scale;
+            ctx.globalAlpha = alpha;
+            ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+        };
+        draw(prevShot, 1);
+        if (k > 0) draw(nextShot, k);
+        if (k < 1 && capturing) blendFrame = requestAnimationFrame(drawBackground);
+    }
+
+    // 흐린 배경을 비움
     function clearBackground() {
-        const f = bgFrame();
-        if (f.src && f.src !== 'about:blank') { f.src = 'about:blank'; readyFrames.delete(f); }
+        stopCapture();
+        prevShot = nextShot = null;
         document.body.classList.remove('art-video-bg-ready');
+        const c = bgCanvas();
+        c?.getContext('2d').clearRect(0, 0, c.width, c.height);
     }
     const active = () => wanted && isFullscreen && !!linked && !blocked.has(linked.videoId);
 
@@ -1272,41 +1374,20 @@ const ArtVideo = (() => {
         // 0.6초 넘게 어긋나면 0.1초 앞으로 맞춤 (맞춘 뒤 1.5초 동안은 다시 맞추지 않음)
         const msg = { type: 'sync', videoId: linked.videoId, time: toVideoMs(currentMs()) / 1000, playing: pausedMs === null && isPlaying, tolerance: 0.6, lead: 0.1, minSeekGap: 1.5 };
         if (readyFrames.has(frame())) frame().contentWindow?.postMessage(msg, '*');
-        // 배경 영상은 앨범 아트 자리 영상의 실제 위치를 따라감 (아래 'time'). 그 소식이 끊겼을 때(불러오는 중 등)만 곡 시간으로
-        if (readyFrames.has(bgFrame()) && performance.now() - mainTimeAt > 2000) bgFrame().contentWindow?.postMessage(msg, '*');
     }
 
-    // 배경 영상을 앨범 아트 자리 영상의 실제 재생 위치에 맞춤 (둘이 각자 곡 시간을 따라가면 서로 최대 1초 남짓 어긋남)
-    function followMain({ videoId, time, playing }) {
-        if (!active() || videoId !== linked.videoId) return;
-        mainTimeAt = performance.now();
-        if (readyFrames.has(bgFrame())) bgFrame().contentWindow?.postMessage({ type: 'sync', videoId, time, playing, ...BG_SYNC }, '*');
-    }
-
-    // 영상 원본 비율 → 영상 상자(style.css --video-ratio)와 배경 영상 크기에 반영 (검은 띠 없이)
+    // 영상 원본 비율 → 영상 상자(style.css --video-ratio)에 반영 (검은 띠 없이)
     function setRatio(width, height) {
         const ratio = width / height;
         if (!Number.isFinite(ratio) || ratio <= 0 || Math.abs(ratio - videoRatio) < 0.01) return;
         videoRatio = ratio;
         document.documentElement.style.setProperty('--video-ratio', ratio.toFixed(4));
-        sizeBackground();
-    }
-
-    // 배경 영상: 원본 비율의 작은 플레이어(짧은 변 200px 이상, 저화질)를 창을 넉넉히 덮도록 확대 (흐린 가장자리가 보이지 않게 1.2배 더)
-    function sizeBackground() {
-        // 높이 200 기준, 폭이 356보다 좁으면(세로로 긴 영상 등) 폭 356 기준
-        let width = 200 * videoRatio, height = 200;
-        if (width < 356) { width = 356; height = 356 / videoRatio; }
-        const root = document.documentElement.style;
-        root.setProperty('--art-bg-w', `${Math.round(width)}px`);
-        root.setProperty('--art-bg-h', `${Math.round(height)}px`);
-        root.setProperty('--art-bg-scale', (Math.max(innerWidth / width, innerHeight / height) * 1.2).toFixed(2));
     }
 
     // 영상 보이기/숨기기. 영상 배경이 다 나타나면 art-video-bg-covered 표시 → 그 아래 물감 배경(AmbientPaint)이 그리기를 멈춤
     //   (가려져서 보이지 않는 애니메이션에 쓰던 CPU·GPU를 아낌. 영상을 끄면 바로 표시를 지워 물감 배경이 다시 그려진 상태로 드러남)
     // 흐린 영상 배경이 화면을 다 덮었음을 표시 (블러 배경일 때만. 앨범아트 색 배경이면 물감 배경이 보이므로 계속 그림)
-    //   영상이 보이고(art-video-on) 배경 영상도 재생이 시작된(art-video-bg-ready) 뒤, 배경이 다 나타나는 시간만큼 지나서
+    //   영상이 보이고(art-video-on) 첫 캡처를 그린(art-video-bg-ready) 뒤, 배경이 다 나타나는 시간만큼 지나서
     function markCovered() {
         const body = document.body.classList;
         if (body.contains('art-video-on') && body.contains('art-video-bg-ready') && blurBackground()) body.add('art-video-bg-covered');
@@ -1321,8 +1402,14 @@ const ArtVideo = (() => {
         if (shown === body.contains('art-video-on')) return;
         body.toggle('art-video-on', shown);
         clearTimeout(coverTimer);
-        if (shown) scheduleCover();
-        else body.remove('art-video-bg-covered');
+        if (shown) {
+            shownAt = performance.now();
+            scheduleCover();
+            startCapture();
+        } else {
+            body.remove('art-video-bg-covered');
+            stopCapture();
+        }
     }
 
     // 영상 페이지를 비우고 영상 상자를 화면에서 뺌 (영상 다운로드 중지)
@@ -1330,8 +1417,9 @@ const ArtVideo = (() => {
         clearTimeout(teardownTimer);
         teardownTimer = null;
         document.body.classList.remove('art-video-loading');
-        for (const f of allFrames()) if (f.src && f.src !== 'about:blank') { f.src = 'about:blank'; readyFrames.delete(f); }
-        document.body.classList.remove('art-video-bg-ready');
+        const f = frame();
+        if (f.src && f.src !== 'about:blank') { f.src = 'about:blank'; readyFrames.delete(f); }
+        clearBackground();
         shownVideoId = null;
     }
 
@@ -1346,7 +1434,8 @@ const ArtVideo = (() => {
             document.body.classList.add('art-video-loading');
             if (shownVideoId && shownVideoId === linked.videoId) setShown(true);
             // 영상 페이지는 처음 켤 때만 불러옴 (곡이 바뀌면 같은 페이지에서 영상만 바꿈)
-            for (const f of frames()) if (!f.src.startsWith(FRAME_URL)) { readyFrames.delete(f); f.src = FRAME_URL; }
+            const f = frame();
+            if (!f.src.startsWith(FRAME_URL)) { readyFrames.delete(f); f.src = FRAME_URL; }
             if (!timer) timer = setInterval(send, SYNC_MS);
             send();
         } else {
@@ -1359,9 +1448,8 @@ const ArtVideo = (() => {
     }
 
     function init() {
-        for (const f of allFrames()) f.addEventListener('load', () => { if (f.src.startsWith(FRAME_URL)) readyFrames.add(f); else readyFrames.delete(f); send(); });
-        sizeBackground();
-        window.addEventListener('resize', sizeBackground);
+        const f = frame();
+        f.addEventListener('load', () => { if (f.src.startsWith(FRAME_URL)) readyFrames.add(f); else readyFrames.delete(f); send(); });
         document.getElementById('album-art').addEventListener('click', () => {
             if (!isFullscreen) return;
             if (!linked) return showToast('이 곡은 연결된 영상이 없어요', 1800);
@@ -1371,19 +1459,8 @@ const ArtVideo = (() => {
         });
         document.getElementById('art-video-shield').addEventListener('click', () => { wanted = false; update(); });
         window.addEventListener('message', (e) => {
-            if (!e.data?.artVideo) return;
-            const fromMain = e.source === frame().contentWindow;
-            if (!fromMain && e.source !== bgFrame().contentWindow) return;
+            if (!e.data?.artVideo || e.source !== frame().contentWindow) return;
             if (e.data.artVideo === 'size') return setRatio(e.data.width, e.data.height);
-            if (!fromMain) {
-                // 배경 영상이 재생되기 시작하면 흐린 배경을 드러냄 (불러오는 동안 검은 배경이 보이지 않게). 오류는 무시
-                if (e.data.artVideo === 'playing' && blurBackground() && !document.body.classList.contains('art-video-bg-ready')) {
-                    document.body.classList.add('art-video-bg-ready');
-                    scheduleCover();
-                }
-                return;
-            }
-            if (e.data.artVideo === 'time') return followMain(e.data);
             if (e.data.artVideo === 'playing' && e.data.videoId === linked?.videoId && active()) {
                 shownVideoId = e.data.videoId;
                 setShown(true);
@@ -1407,15 +1484,17 @@ const ArtVideo = (() => {
     }
 
     // 설정에서 '영상 배경'을 바꿨을 때: 영상을 보는 중이면 배경을 겹쳐 바꿈
-    //   블러 → 앨범아트 색: 흐린 영상이 서서히 사라진 뒤 배경 영상을 비움 (물감 배경은 바로 다시 그림)
-    //   앨범아트 색 → 블러: 배경 영상을 불러와 서서히 나타냄 (다 덮은 뒤 물감 배경을 멈춤)
+    //   블러 → 앨범아트 색: 흐린 배경이 서서히 사라진 뒤 비움 (물감 배경은 바로 다시 그림)
+    //   앨범아트 색 → 블러: 캡처를 시작해 서서히 나타냄 (다 덮은 뒤 물감 배경을 멈춤)
     function applyBackgroundSetting() {
         clearTimeout(coverTimer);
         if (!blurBackground()) {
+            stopCapture();
             document.body.classList.remove('art-video-bg-covered');
             setTimeout(() => { if (!blurBackground()) clearBackground(); }, FADE_OUT_MS);
         } else {
-            scheduleCover(); // 배경 영상이 이미 재생 중이면(바로 되돌린 경우) 다시 덮음 표시
+            scheduleCover(); // 흐린 배경이 아직 남아 있으면(바로 되돌린 경우) 다시 덮음 표시
+            if (document.body.classList.contains('art-video-on')) startCapture();
         }
         update();
     }
@@ -2155,20 +2234,34 @@ ipcRenderer.on('change-style', (event, style) => {
 
 ipcRenderer.on('hide-widget-for-settings', () => document.body.classList.add('settings-open'));
 
-// 🚨 설정창 열기 시 전체화면 해제 로직
-ipcRenderer.on('open-settings', () => {
-    if (isFullscreen) toggleFullscreen();
-    document.getElementById('settings-modal').classList.add('show');
+function settingsShown() { return !!document.getElementById('settings-modal')?.classList.contains('show'); }
+
+// 설정 창 열기
+//   전체화면에서 열면(main.js가 overFullscreen 표시) 전체화면을 그대로 둔 채 위에 띄우고, 닫으면 전체화면 그대로
+//   바·LP에서 열면 main.js가 창을 화면 크기로 키운 뒤 보냄 (닫으면 원래 바·LP로)
+ipcRenderer.on('open-settings', (event, opts) => {
+    const modal = document.getElementById('settings-modal');
+    const overFullscreen = !!opts?.overFullscreen;
+    if (!overFullscreen && isFullscreen) toggleFullscreen();
+    modal.classList.toggle('over-fullscreen', overFullscreen);
+    modal.classList.remove('closing');
+    modal.classList.add('show');
+    wakeFromIdle(); // 숨겨진 커서를 다시 보이게
 });
 
 ipcRenderer.on('show-widget-after-settings', () => document.body.classList.remove('settings-open'));
 
 document.getElementById('settings-close')?.addEventListener('click', closeSettingsModal);
+// 설정 창 바깥(어두운 부분)을 누르면 닫힘
+document.getElementById('settings-modal')?.addEventListener('mousedown', (e) => {
+    if (e.target === e.currentTarget) closeSettingsModal();
+});
 function closeSettingsModal() {
     const modal = document.getElementById('settings-modal');
-    if (modal) modal.classList.add('closing');
+    if (!modal || !modal.classList.contains('show') || modal.classList.contains('closing')) return;
+    modal.classList.add('closing');
     setTimeout(() => {
-        if (modal) { modal.classList.remove('show'); modal.classList.remove('closing'); }
+        modal.classList.remove('show', 'closing', 'over-fullscreen');
         ipcRenderer.send('close-settings');
     }, 350);
 }
