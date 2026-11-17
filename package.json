@@ -35,7 +35,7 @@
       "package.json"
     ],
     "directories": {
-      "output": "dist"
+      "output": "dist.noindex"
     },
     "mac": {
       "target": [

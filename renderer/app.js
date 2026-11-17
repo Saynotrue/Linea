@@ -1972,6 +1972,20 @@ function startEQ() {
         // 분석 범위를 올린 만큼(15dB = 255 / 70dB × 15)의 값, 막대 최대 높이 (기본 16px의 배수, 바 높이 44px 안에 들어가도록)
         const EQ_HEADROOM = 255 / 70 * 15;
         const EQ_MAX_SCALE = 2.0;
+
+        // 🥁 저음 막대(0~2) 자동 맞춤: 곡마다 저음이 깔린 정도가 달라 위 고정 계산으로는 북소리가 묻히는 곡이 있음
+        //   (예: Imagine Dragons - Thunder는 저음 값이 늘 최대치 근처(193~252)라 막대가 거의 같은 높이에 머묾)
+        //   → 막대마다 최근 평균과 흔들림 폭(표준편차)을 재고, 평균에서 튄 정도를 그 곡의 흔들림 폭 기준으로 보여 줌
+        //     킥이 칠 때만 튀고 사이에는 내려감. 실제 곡 녹화로 맞춘 값 (Thunder 움직임 약 3배, 일반 곡도 활발)
+        const ADAPTIVE_BARS = 3;
+        const ADAPT_STAT_MS = 1500; // 평균·흔들림 폭을 재는 시간
+        const ADAPT_REST = 0.25;    // 평균일 때의 높이 비율
+        const ADAPT_Z_GAIN = 0.45;  // 흔들림 폭 1배만큼 튀면 높이 비율을 이만큼 올림
+        const ADAPT_SD_FLOOR = 3;   // 흔들림이 거의 없을 때 작은 차이가 과하게 커지지 않게
+        const ADAPT_QUIET = 40;     // 이보다 작은 소리는 낮게 (조용한 구간)
+        const BAR_MAX_PX = BAR_BASE_PX * EQ_MAX_SCALE;
+        const adaptMean = new Array(ADAPTIVE_BARS).fill(null);
+        const adaptVar = new Array(ADAPTIVE_BARS).fill(0);
         function renderVisualizer() {
             if (!isPlaying) {
                 latestEqData = new Array(10).fill(0);
@@ -2028,7 +2042,15 @@ function startEQ() {
                 const gain = BAR_MOTION_GAIN[index] ?? MOTION_GAIN;
                 let value = Math.max(0, (smoothed - baselines[index] * weight) * gain);
 
-                if (visualizerMode === 'BARS') {
+                if (visualizerMode === 'BARS' && index < ADAPTIVE_BARS) {
+                    const k = 1 - Math.exp(-dt / ADAPT_STAT_MS);
+                    if (adaptMean[index] === null || smoothed === 0) { adaptMean[index] = smoothed; adaptVar[index] = 0; }
+                    adaptMean[index] += (smoothed - adaptMean[index]) * k;
+                    adaptVar[index] += ((smoothed - adaptMean[index]) ** 2 - adaptVar[index]) * k;
+                    const z = (smoothed - adaptMean[index]) / Math.max(ADAPT_SD_FLOOR, Math.sqrt(adaptVar[index]));
+                    const level = Math.max(0, Math.min(1, (ADAPT_REST + z * ADAPT_Z_GAIN) * Math.min(1, smoothed / ADAPT_QUIET)));
+                    bar.style.height = `${(BAR_MIN_PX + level * (BAR_MAX_PX - BAR_MIN_PX)).toFixed(1)}px`;
+                } else if (visualizerMode === 'BARS') {
                     // 최소 높이는 배율을 곱한 뒤 마지막에 적용 (먼저 적용하면 고음 막대의 최소 높이까지 배율만큼 커져,
                     // 조용할 때 저음은 점인데 고음은 막대로 떠 있게 됨)
                     let baseScale = (value / 255) * 1.75;
